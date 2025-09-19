@@ -49,7 +49,7 @@ def main(
     # check for API key
     if not API_KEY:
         typer.echo("GOOGLE_API_KEY not found in environment. Exiting...")
-        typer.Exit(1)
+        raise typer.Exit(code=1)
 
     TIMESTAMP = int(time.time())
     
@@ -57,7 +57,7 @@ def main(
     if output_dir:
         if not dir_is_valid(output_dir):
             typer.echo("Exiting...")
-            typer.Exit(1)
+            raise typer.Exit(code=1)
     else:
         output_dir = Path.cwd()
 
@@ -65,7 +65,7 @@ def main(
     if path_to_pdf and not text_summary_file and not transcript_file:	
         if not file_is_valid(path_to_pdf, '.pdf', 20):
             typer.echo("Exiting...")
-            typer.Exit(1)
+            raise typer.Exit(code=1)
 
         typer.echo("Generating text summary from PDF. This may take a few minutes...")
         text_summary = infer_with_pdf_document_understanding(path_to_pdf, TEXT_SUMMARY_PROMPT, API_KEY, TEXT_MODEL)
@@ -88,7 +88,7 @@ def main(
     if text_summary_file:
         if not file_is_valid(text_summary_file, '.txt'):
             typer.echo("Exiting...")
-            typer.Exit(1)
+            raise typer.Exit(code=1)
         text_summary = read_text_from_file(text_summary_file)
     
     # generate transcript
@@ -113,7 +113,7 @@ def main(
     if transcript_file:
         if not file_is_valid(transcript_file, '.txt'):
             typer.echo("Exiting...")
-            typer.Exit(1)
+            raise typer.Exit(code=1)
         transcript = read_text_from_file(transcript_file)
 
     # chunk transcript
@@ -130,6 +130,14 @@ def main(
     combined_audio_filepath = Path(output_dir / f"combined_audio_{TIMESTAMP}.wav")
     combine_wav_files(audio_chunk_filepaths, combined_audio_filepath)
     typer.echo(f"Combined audio saved to {str(combined_audio_filepath)}")
+
+    delete_audio_chunks = typer.confirm(
+        "Do you wish to delete the partial audio chunks?\n"
+        "Choose No if you wish to save them in case they need to be respliced later."
+        )
+
+    if delete_audio_chunks:
+        delete_files(audio_chunk_filepaths)
 
     typer.echo("Scripted completed.")
 
@@ -431,6 +439,26 @@ def combine_wav_files(
     # Close the output file
     output_wave.close()
 
+
+def delete_files(
+    files_to_delete: List[Path]
+):
+    """
+    Given a list of filepaths,
+    delete the files.
+    """
+    for file_path in files_to_delete:
+        try:
+            # Check if the path is a file and then delete it
+            if file_path.is_file():
+                file_path.unlink()
+                typer.echo(f"Successfully deleted {file_path}")
+            else:
+                typer.echo(f"Skipping {file_path}: It is not a file.")
+        except FileNotFoundError:
+            typer.echo(f"Error: {file_path} not found.")
+        except Exception as e:
+            typer.echo(f"An error occurred while deleting {file_path}: {e}")
 
 if __name__ == "__main__":
     typer.run(main)
