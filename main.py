@@ -7,7 +7,7 @@ import time
 import typer
 from typing import Optional
 
-from prompts import TEXT_SUMMARY_PROMPT
+from prompts import TEXT_SUMMARY_PROMPT, TRANSCRIPT_SYS_INSTRUCTIONS
 
 
 def main(
@@ -21,6 +21,12 @@ def main(
             None, help=(
                 "Provide directory where output files (text, audio) should be saved. "
                 "Defaults to current working directory."
+            )
+        ),
+        text_summary_file: Optional[Path] = typer.Option(
+            None, help=(
+                "Provide path to text file containing the summary of your PDF. "
+                "If providing this text file, the PDF path argument doesn't need to be provided."
             )
         )
 ):
@@ -44,19 +50,42 @@ def main(
         output_dir = Path.cwd()
 
     # generate text summary
-    if path_to_pdf:	
+    if path_to_pdf and not text_summary_file:	
         if not file_is_valid(path_to_pdf, '.pdf', 20):
             typer.echo("Exiting...")
             typer.Exit(1)
 
         typer.echo("Generating text summary from PDF. This may take a few minutes...")
-        text_summary = generate_text_summary(path_to_pdf, TEXT_SUMMARY_PROMPT, api_key)
+        text_summary = infer_with_pdf_document_understanding(path_to_pdf, TEXT_SUMMARY_PROMPT, api_key)
 
         if text_summary:
             text_summary_output_path = Path(output_dir / f'text_summary_{timestamp}.txt')
             write_text_to_file(text_summary, text_summary_output_path)
             typer.echo(f"Text summary written to {text_summary_output_path}")
+            typer.confirm(
+                (
+                    "Do you wish to convert this summary to transcript?" 
+                    "To edit the summary first, choose No to exit, edit the summary file, "
+                    "then rerun the script using the `--text_summary_file` flag."
+                ),
+                False,
+                True,
+            )
+
+    # handle existing/inputted text summary
+    if text_summary_file:
+        if not file_is_valid(text_summary_file, '.txt'):
+            typer.echo("Exiting...")
+            typer.Exit(1)
+        text_summary = read_text_from_file(text_summary_file)
     
+    # generate transcript
+    typer.echo("Generating transcript from text summary. This may take a few minutes...")
+    transcript = generate_text(text_summary, TRANSCRIPT_SYS_INSTRUCTIONS, api_key)
+    transcript_output_path = Path(output_dir / f'transcript_{timestamp}.txt')
+    write_text_to_file(transcript, transcript_output_path)
+    typer.echo(f"Transcript written to {transcript_output_path}")
+
     typer.echo("Scripted completed.")
 
 
@@ -105,13 +134,13 @@ def file_is_valid(
     return True
 
 
-def generate_text_summary(
+def infer_with_pdf_document_understanding(
         path_to_pdf: Path,
         prompt: str,
         api_key: Optional[str] = None
 ) -> str:
     """
-    Given a PDF file, generate a text summary of the content
+    Given a PDF file as corpus, generate a response to a user prompt
     """
     if api_key:
         client = genai.Client(api_key=api_key)
@@ -119,13 +148,50 @@ def generate_text_summary(
         client = genai.Client()
 
     response = client.models.generate_content(
-    model="gemini-2.5-flash",
-    contents=[
-        types.Part.from_bytes(
-            data=path_to_pdf.read_bytes(),
-            mime_type='application/pdf',
-        ),
-        prompt])
+        model="gemini-2.5-flash",
+        contents=[
+                types.Part.from_bytes(
+                    data=path_to_pdf.read_bytes(),
+                    mime_type='application/pdf',
+                ),
+                prompt
+            ]
+    )
+    
+    return response.text
+
+
+def generate_text(
+        user_prompt: str,
+        sys_instrux: Optional[str] = None,
+        api_key: Optional[str] = None
+) -> str:
+    """
+    Generate text, given a user prompt
+    and optional system instructions
+
+    user_prompt can be a natural language prompt
+    or a text that the system instructions indicate
+    the model should transform
+    """
+    if api_key:
+        client = genai.Client(api_key=api_key)
+    else: 
+        client = genai.Client()
+
+    if sys_instrux:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            config=types.GenerateContentConfig(
+                system_instruction=sys_instrux
+            ),
+            contents=user_prompt
+        )
+    else:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=user_prompt
+        )
     
     return response.text
 
@@ -139,6 +205,17 @@ def write_text_to_file(
     """
     with open(output_path, 'w') as f:
         f.write(text)
+
+
+def read_text_from_file(
+    text_filepath: Path
+) -> str:
+    """
+    Read text from text file to string
+    """
+    with open(text_filepath, 'r') as f:
+        text = f.read()
+    return text
 
 
 if __name__ == "__main__":
