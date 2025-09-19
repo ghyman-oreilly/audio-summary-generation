@@ -4,12 +4,57 @@ from google.genai import types
 import numpy as np
 from pathlib import Path
 import os
+import random
 import time
 import typer
 from typing import List, Optional
 import wave
 
 from prompts import TEXT_SUMMARY_PROMPT, TRANSCRIPT_SYS_INSTRUCTIONS
+
+
+# https://ai.google.dev/gemini-api/docs/speech-generation
+VOICES = [
+    "Zephyr",
+    "Puck",
+    "Charon",
+    "Kore",
+    "Fenrir",
+    "Leda",
+    "Orus",
+    "Aoede",
+    "Callirrhoe",
+    "Autonoe",
+    "Enceladus",
+    "Iapetus",
+    "Umbriel",
+    "Algieba",
+    "Despina",
+    "Erinome",
+    "Algenib",
+    "Rasalgethi",
+    "Laomedeia",
+    "Achernar",
+    "Alnilam",
+    "Schedar",
+    "Gacrux",
+    "Pulcherrima",
+    "Achird",
+    "Zubenelgenubi",
+    "Vindemiatrix",
+    "Sadachbia",
+    "Sadaltager",
+    "Sulafat"
+]
+
+
+def _get_voice_choices(incomplete: str):
+    """
+    Returns a list of voice choices for autocompletion.
+    """
+    for voice in VOICES:
+        if voice.startswith(incomplete.lower()):
+            yield voice
 
 
 def main(
@@ -37,7 +82,28 @@ def main(
                 "If providing this text file, the PDF path argument and text_summary_file options "
                 "don't need to be provided."
             )
-        )
+        ),
+        speaker_one_voice: Optional[str] = typer.Option(
+            None,
+            autocompletion=_get_voice_choices,
+            case_sensitive=False,
+            help=(
+                f"Choose a voice for speaker one. "
+                f"Available options are: {', '.join(VOICES)} "
+                f"Default: random."
+            )
+        ),
+        speaker_two_voice: Optional[str] = typer.Option(
+            None,
+            autocompletion=_get_voice_choices,
+            case_sensitive=False,
+            help=(
+                f"Choose a voice for speaker one. "
+                f"Available options are: {', '.join(VOICES)} "
+                f"Be sure to select a different voice from you chose for speaker one! "
+                f"Default: random."
+            )
+        ),
 ):
 
     load_dotenv()
@@ -60,6 +126,32 @@ def main(
             raise typer.Exit(code=1)
     else:
         output_dir = Path.cwd()
+
+    voices_left_to_choose_from = list(VOICES)
+    
+    # remove selected voices from voice candidates list, as applicable
+    if speaker_one_voice:
+        try:
+            matching_index = voices_left_to_choose_from.index(speaker_one_voice)
+            voices_left_to_choose_from.pop(matching_index)
+        except:
+            typer.echo(f"Invalid voice ({speaker_one_voice}) selected for speaker one. Exiting.")
+            raise typer.Exit(1)
+    if speaker_two_voice:
+        try:
+            matching_index = voices_left_to_choose_from.index(speaker_two_voice)
+            voices_left_to_choose_from.pop(matching_index)
+        except:
+            typer.echo(f"Invalid voice ({speaker_two_voice}) selected for speaker two. Exiting.")
+            raise typer.Exit(1)
+
+    # set remaining voices, as applicable
+    if not speaker_one_voice:
+        random_index = random.randint(0, len(voices_left_to_choose_from) - 1)
+        speaker_one_voice = voices_left_to_choose_from.pop(random_index)
+    if not speaker_two_voice:
+        random_index = random.randint(0, len(voices_left_to_choose_from) - 1)
+        speaker_two_voice = voices_left_to_choose_from.pop(random_index)
 
     # generate text summary
     if path_to_pdf and not text_summary_file and not transcript_file:	
@@ -123,7 +215,13 @@ def main(
 
     # generate audio from chunks
     typer.echo("Generating audio from transcript chunks. This could take a while (up to 10 minutes per chunk)...")
-    audio_chunk_filepaths: List[Path] = generate_audio_chunks(transcript_chunks, TIMESTAMP, output_dir)
+    audio_chunk_filepaths: List[Path] = generate_audio_chunks(
+        transcript_chunks, 
+        TIMESTAMP, 
+        output_dir,
+        speaker_one_voice=speaker_one_voice,
+        speaker_two_voice=speaker_two_voice
+    )
 
     # combine chunk audio files
     typer.echo("Combining audio chunk files...")
@@ -327,7 +425,9 @@ def generate_audio_chunks(
     timestamp: int,
     output_dir: Path,
     api_key: Optional[str] = None,
-    model_name: str = 'gemini-2.5-flash-preview-tts'  
+    model_name: str = 'gemini-2.5-flash-preview-tts',
+    speaker_one_voice: str = 'Puck',
+    speaker_two_voice: str = 'Zephyr'  
 ):
     """
     Given a list of text chunks, generate
@@ -339,7 +439,14 @@ def generate_audio_chunks(
     for i, text_chunk in enumerate(text_chunks):
         typer.echo(f"Generating audio chunk {i+1} of {len(text_chunks)}...")
         audio_chunk_filepath = Path(output_dir / f"audio_chunk_{i:03d}_{timestamp}.wav")
-        generate_audio_chunk_from_text_chunk(text_chunk, audio_chunk_filepath, api_key, model_name)
+        generate_audio_chunk_from_text_chunk(
+            text_chunk, 
+            audio_chunk_filepath, 
+            api_key=api_key, 
+            model_name=model_name,
+            speaker_one_voice=speaker_one_voice,
+            speaker_two_voice=speaker_two_voice
+        )
         audio_chunk_filepaths.append(audio_chunk_filepath)
         typer.echo(f"Audio chunk saved to {str(audio_chunk_filepath)}...")
     
@@ -350,7 +457,9 @@ def generate_audio_chunk_from_text_chunk(
     text: str,
     output_file: Path,
     api_key: Optional[str] = None,
-    model_name: str = 'gemini-2.5-flash-preview-tts'        
+    model_name: str = 'gemini-2.5-flash-preview-tts',
+    speaker_one_voice: str = 'Puck',
+    speaker_two_voice: str = 'Zephyr'        
 ):
     """
     Given a text prompt, generate audio
@@ -372,7 +481,7 @@ def generate_audio_chunk_from_text_chunk(
                     speaker='Speaker 1', # TODO: need to validate in text and make this dynamic
                     voice_config=types.VoiceConfig(
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name='Zephyr',
+                            voice_name=speaker_one_voice,
                         )
                     )
                 ),
@@ -380,7 +489,7 @@ def generate_audio_chunk_from_text_chunk(
                     speaker='Speaker 2', # TODO: need to validate in text and make this dynamic
                     voice_config=types.VoiceConfig(
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name='Puck',
+                            voice_name=speaker_two_voice,
                         )
                     )
                 ),
