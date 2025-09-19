@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-import numpy as np
 from pathlib import Path
 import os
 import random
