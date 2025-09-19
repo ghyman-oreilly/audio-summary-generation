@@ -1,11 +1,13 @@
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+import numpy as np
 from pathlib import Path
 import os
 import time
 import typer
-from typing import Optional
+from typing import List, Optional
+import wave
 
 from prompts import TEXT_SUMMARY_PROMPT, TRANSCRIPT_SYS_INSTRUCTIONS
 
@@ -28,18 +30,28 @@ def main(
                 "Provide path to text file containing the summary of your PDF. "
                 "If providing this text file, the PDF path argument doesn't need to be provided."
             )
+        ),
+        transcript_file: Optional[Path] = typer.Option(
+            None, help=(
+                "Provide path to text file containing the transcript for your audio. "
+                "If providing this text file, the PDF path argument and text_summary_file options "
+                "don't need to be provided."
+            )
         )
 ):
-    
+
     load_dotenv()
-    api_key = os.getenv("GOOGLE_API_KEY")
+    API_KEY = os.getenv("GOOGLE_API_KEY")
+
+    TEXT_MODEL = 'gemini-2.5-flash'
+    TTS_MODEL = 'gemini-2.5-flash-preview-tts'
 
     # check for API key
-    if not api_key:
+    if not API_KEY:
         typer.echo("GOOGLE_API_KEY not found in environment. Exiting...")
-        typer.exit(1)
+        typer.Exit(1)
 
-    timestamp = int(time.time())
+    TIMESTAMP = int(time.time())
     
     # check/config output directory
     if output_dir:
@@ -50,16 +62,16 @@ def main(
         output_dir = Path.cwd()
 
     # generate text summary
-    if path_to_pdf and not text_summary_file:	
+    if path_to_pdf and not text_summary_file and not transcript_file:	
         if not file_is_valid(path_to_pdf, '.pdf', 20):
             typer.echo("Exiting...")
             typer.Exit(1)
 
         typer.echo("Generating text summary from PDF. This may take a few minutes...")
-        text_summary = infer_with_pdf_document_understanding(path_to_pdf, TEXT_SUMMARY_PROMPT, api_key)
+        text_summary = infer_with_pdf_document_understanding(path_to_pdf, TEXT_SUMMARY_PROMPT, API_KEY, TEXT_MODEL)
 
         if text_summary:
-            text_summary_output_path = Path(output_dir / f'text_summary_{timestamp}.txt')
+            text_summary_output_path = Path(output_dir / f'text_summary_{TIMESTAMP}.txt')
             write_text_to_file(text_summary, text_summary_output_path)
             typer.echo(f"Text summary written to {text_summary_output_path}")
             typer.confirm(
@@ -80,11 +92,44 @@ def main(
         text_summary = read_text_from_file(text_summary_file)
     
     # generate transcript
-    typer.echo("Generating transcript from text summary. This may take a few minutes...")
-    transcript = generate_text(text_summary, TRANSCRIPT_SYS_INSTRUCTIONS, api_key)
-    transcript_output_path = Path(output_dir / f'transcript_{timestamp}.txt')
-    write_text_to_file(transcript, transcript_output_path)
-    typer.echo(f"Transcript written to {transcript_output_path}")
+    if not transcript_file:
+        typer.echo("Generating transcript from text summary. This may take a few minutes...")
+        transcript = generate_text(text_summary, TRANSCRIPT_SYS_INSTRUCTIONS, API_KEY, TEXT_MODEL)
+        transcript_output_path = Path(output_dir / f'transcript_{TIMESTAMP}.txt')
+        write_text_to_file(transcript, transcript_output_path)
+        typer.echo(f"Transcript written to {transcript_output_path}")
+        typer.confirm(
+            (
+                "Do you wish to convert this transcript to audio?" 
+                "To edit the transcript first (which is highly recommended!), "
+                "choose No to exit, edit the transcript file, "
+                "then rerun the script using the `--transcript_file` flag."
+            ),
+            False,
+            True,
+        )
+
+    # handle existing/inputted transcript
+    if transcript_file:
+        if not file_is_valid(transcript_file, '.txt'):
+            typer.echo("Exiting...")
+            typer.Exit(1)
+        transcript = read_text_from_file(transcript_file)
+
+    # chunk transcript
+    typer.echo("Chunking transcript. This may take a few minutes...")
+    transcript_chunks = chunk_string(transcript, API_KEY, TTS_MODEL)
+    typer.echo(f"Transcript split into {len(transcript_chunks)} chunks.")
+
+    # generate audio from chunks
+    typer.echo("Generating audio from transcript chunks. This could take a while (up to 10 minutes per chunk)...")
+    audio_chunk_filepaths: List[Path] = generate_audio_chunks(transcript_chunks, TIMESTAMP, output_dir)
+
+    # combine chunk audio files
+    typer.echo("Combining audio chunk files...")
+    combined_audio_filepath = Path(output_dir / f"combined_audio_{TIMESTAMP}.wav")
+    combine_wav_files(audio_chunk_filepaths, combined_audio_filepath)
+    typer.echo(f"Combined audio saved to {str(combined_audio_filepath)}")
 
     typer.echo("Scripted completed.")
 
@@ -137,7 +182,8 @@ def file_is_valid(
 def infer_with_pdf_document_understanding(
         path_to_pdf: Path,
         prompt: str,
-        api_key: Optional[str] = None
+        api_key: Optional[str] = None,
+        model_name: str = 'gemini-2.5-flash'
 ) -> str:
     """
     Given a PDF file as corpus, generate a response to a user prompt
@@ -148,7 +194,7 @@ def infer_with_pdf_document_understanding(
         client = genai.Client()
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=model_name,
         contents=[
                 types.Part.from_bytes(
                     data=path_to_pdf.read_bytes(),
@@ -164,7 +210,8 @@ def infer_with_pdf_document_understanding(
 def generate_text(
         user_prompt: str,
         sys_instrux: Optional[str] = None,
-        api_key: Optional[str] = None
+        api_key: Optional[str] = None,
+        model_name: str = 'gemini-2.5-flash'
 ) -> str:
     """
     Generate text, given a user prompt
@@ -181,7 +228,7 @@ def generate_text(
 
     if sys_instrux:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=model_name,
             config=types.GenerateContentConfig(
                 system_instruction=sys_instrux
             ),
@@ -216,6 +263,173 @@ def read_text_from_file(
     with open(text_filepath, 'r') as f:
         text = f.read()
     return text
+
+
+def chunk_string(
+    text_string: str,
+    api_key,
+    model_name: str = 'gemini-2.5-flash-preview-tts',
+    token_limit: Optional[int] = None
+):
+    """
+    Generate a list of strings from a single string,
+    keeping within a specified token limit.
+    """
+    if api_key:
+        client = genai.Client(api_key=api_key)
+    else: 
+        client = genai.Client()
+    
+    if not token_limit:
+        token_limit = 3000 # could use a map to allow for various models 
+                           # (note that count_tokens API method is NOT reliable)
+
+    chunks = []
+    current_chunk = ""
+    current_token_count = 0
+
+    lines = text_string.split('\n')
+
+    for line in lines:
+        response = client.models.count_tokens(
+            model=model_name,
+            contents=line
+        )
+        
+        line_token_count = response.total_tokens
+
+        if current_token_count + line_token_count <= token_limit:
+            current_chunk += line + '\n'
+            current_token_count += line_token_count
+        else:
+            # Start a new chunk
+            chunks.append(current_chunk.strip())
+            current_chunk = line + '\n'
+            current_token_count = line_token_count
+
+    # Add the last chunk to the list
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+
+    return chunks
+
+
+def generate_audio_chunks(
+    text_chunks: List[str],
+    timestamp: int,
+    output_dir: Path,
+    api_key: Optional[str] = None,
+    model_name: str = 'gemini-2.5-flash-preview-tts'  
+):
+    """
+    Given a list of text chunks, generate
+    and save audio chunks to file, returning
+    list of audio chunk filepaths.
+    """
+    audio_chunk_filepaths = []
+
+    for i, text_chunk in enumerate(text_chunks):
+        typer.echo(f"Generating audio chunk {i+1} of {len(text_chunks)}...")
+        audio_chunk_filepath = Path(output_dir / f"audio_chunk_{i:03d}_{timestamp}.wav")
+        generate_audio_chunk_from_text_chunk(text_chunk, audio_chunk_filepath, api_key, model_name)
+        audio_chunk_filepaths.append(audio_chunk_filepath)
+        typer.echo(f"Audio chunk saved to {str(audio_chunk_filepath)}...")
+    
+    return audio_chunk_filepaths
+
+
+def generate_audio_chunk_from_text_chunk(
+    text: str,
+    output_file: Path,
+    api_key: Optional[str] = None,
+    model_name: str = 'gemini-2.5-flash-preview-tts'        
+):
+    """
+    Given a text prompt, generate audio
+    """
+    if api_key:
+        client = genai.Client(api_key=api_key)
+    else: 
+        client = genai.Client()
+
+    response = client.models.generate_content(
+    model=model_name,
+    contents=text,
+    config=types.GenerateContentConfig(
+        response_modalities=["AUDIO"],
+        speech_config=types.SpeechConfig(
+            multi_speaker_voice_config=types.MultiSpeakerVoiceConfig(
+                speaker_voice_configs=[
+                types.SpeakerVoiceConfig(
+                    speaker='Speaker 1', # TODO: need to validate in text and make this dynamic
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                            voice_name='Zephyr',
+                        )
+                    )
+                ),
+                types.SpeakerVoiceConfig(
+                    speaker='Speaker 2', # TODO: need to validate in text and make this dynamic
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                            voice_name='Puck',
+                        )
+                    )
+                ),
+                ]
+            )
+        )
+    )
+    )
+
+    data = response.candidates[0].content.parts[0].inline_data.data
+
+    write_audio_data_to_wav_file(output_file, data)
+
+
+def write_audio_data_to_wav_file(
+        output_path: Path, 
+        audio_data, 
+        channels=1, 
+        rate=24000, 
+        sample_width=2
+):
+   with wave.open(str(output_path), "wb") as wf:
+      wf.setnchannels(channels)
+      wf.setsampwidth(sample_width)
+      wf.setframerate(rate)
+      wf.writeframes(audio_data)
+
+
+def combine_wav_files(
+        input_files: List[Path], 
+        output_file: Path
+):
+    """
+    Combines a list of WAV files into a single WAV file.
+    This function assumes all input files have the same
+    sample rate, bit depth, and number of channels.
+    """
+    # Read the first file to get its parameters
+    first_file = wave.open(str(input_files[0]), 'rb')
+    params = first_file.getparams()
+    first_file.close()
+
+    # Create a new WAV file for writing
+    output_wave = wave.open(str(output_file), 'wb')
+    output_wave.setparams(params)
+
+    # Loop through each input file, read its data, and write to the output
+    for file_path in input_files:
+        with wave.open(str(file_path), 'rb') as input_wave:
+            # Read all audio frames from the current file
+            frames = input_wave.readframes(input_wave.getnframes())
+
+            # Write the frames to the output file
+            output_wave.writeframes(frames)
+
+    # Close the output file
+    output_wave.close()
 
 
 if __name__ == "__main__":
