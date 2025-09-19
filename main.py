@@ -1,6 +1,6 @@
-from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+import keyring
 from pathlib import Path
 import os
 import random
@@ -49,6 +49,8 @@ VOICES = [
 DEFAULT_SPEAKER_ONE_LABEL = 'Speaker 1'
 DEFAULT_SPEAKER_TWO_LABEL = 'Speaker 2'
 
+SERVICE_NAME = "audio_summary_generator"
+USERNAME = "google_api_key"
 
 def main(
         path_to_pdf: Optional[Path] = typer.Argument(
@@ -116,16 +118,10 @@ def main(
         ),
 ):
 
-    load_dotenv()
-    API_KEY = os.getenv("GOOGLE_API_KEY")
+    API_KEY = check_api_key()
 
     TEXT_MODEL = 'gemini-2.5-flash'
     TTS_MODEL = 'gemini-2.5-flash-preview-tts'
-
-    # check for API key
-    if not API_KEY:
-        typer.echo("GOOGLE_API_KEY not found in environment. Exiting...")
-        raise typer.Exit(code=1)
 
     TIMESTAMP = int(time.time())
     
@@ -228,7 +224,7 @@ def main(
             speaker_1=chosen_speaker_one_prefix, 
             speaker_2=chosen_speaker_two_prefix
         )
-        transcript = generate_text(text_summary, sys_instrux, API_KEY, TEXT_MODEL)
+        transcript = generate_text(text_summary, API_KEY, sys_instrux, TEXT_MODEL)
         transcript_output_path = Path(output_dir / f'transcript_{TIMESTAMP}.txt')
         write_text_to_file(transcript, transcript_output_path)
         typer.echo(f"Transcript written to {transcript_output_path}")
@@ -275,6 +271,7 @@ def main(
         transcript_chunks, 
         TIMESTAMP, 
         output_dir,
+        API_KEY,
         speaker_one_voice=speaker_one_voice,
         speaker_two_voice=speaker_two_voice,
         chosen_speaker_one_prefix=chosen_speaker_one_prefix,
@@ -346,16 +343,13 @@ def file_is_valid(
 def infer_with_pdf_document_understanding(
         path_to_pdf: Path,
         prompt: str,
-        api_key: Optional[str] = None,
+        api_key: str,
         model_name: str = 'gemini-2.5-flash'
 ) -> str:
     """
     Given a PDF file as corpus, generate a response to a user prompt
     """
-    if api_key:
-        client = genai.Client(api_key=api_key)
-    else: 
-        client = genai.Client()
+    client = genai.Client(api_key=api_key)
 
     response = client.models.generate_content(
         model=model_name,
@@ -373,8 +367,8 @@ def infer_with_pdf_document_understanding(
 
 def generate_text(
         user_prompt: str,
+        api_key: str,
         sys_instrux: Optional[str] = None,
-        api_key: Optional[str] = None,
         model_name: str = 'gemini-2.5-flash'
 ) -> str:
     """
@@ -385,10 +379,7 @@ def generate_text(
     or a text that the system instructions indicate
     the model should transform
     """
-    if api_key:
-        client = genai.Client(api_key=api_key)
-    else: 
-        client = genai.Client()
+    client = genai.Client(api_key=api_key)
 
     if sys_instrux:
         response = client.models.generate_content(
@@ -431,7 +422,7 @@ def read_text_from_file(
 
 def chunk_string(
     text_string: str,
-    api_key,
+    api_key: str,
     model_name: str = 'gemini-2.5-flash-preview-tts',
     token_limit: Optional[int] = None
 ):
@@ -439,10 +430,7 @@ def chunk_string(
     Generate a list of strings from a single string,
     keeping within a specified token limit.
     """
-    if api_key:
-        client = genai.Client(api_key=api_key)
-    else: 
-        client = genai.Client()
+    client = genai.Client(api_key=api_key)
     
     if not token_limit:
         token_limit = 3000 # could use a map to allow for various models 
@@ -482,7 +470,7 @@ def generate_audio_chunks(
     text_chunks: List[str],
     timestamp: int,
     output_dir: Path,
-    api_key: Optional[str] = None,
+    api_key: str,
     model_name: str = 'gemini-2.5-flash-preview-tts',
     speaker_one_voice: str = 'Puck',
     speaker_two_voice: str = 'Zephyr',
@@ -518,7 +506,7 @@ def generate_audio_chunks(
 def generate_audio_chunk_from_text_chunk(
     text: str,
     output_file: Path,
-    api_key: Optional[str] = None,
+    api_key: str,
     model_name: str = 'gemini-2.5-flash-preview-tts',
     speaker_one_voice: str = 'Puck',
     speaker_two_voice: str = 'Zephyr',
@@ -528,10 +516,7 @@ def generate_audio_chunk_from_text_chunk(
     """
     Given a text prompt, generate audio
     """
-    if api_key:
-        client = genai.Client(api_key=api_key)
-    else: 
-        client = genai.Client()
+    client = genai.Client(api_key=api_key)
 
     response = client.models.generate_content(
     model=model_name,
@@ -632,6 +617,30 @@ def delete_files(
             typer.echo(f"Error: {file_path} not found.")
         except Exception as e:
             typer.echo(f"An error occurred while deleting {file_path}: {e}")
+
+
+def check_api_key(force_prompt: bool = False) -> str:
+    """
+    Retrieve Gemini API key from keyring, prompt user if not 
+    found or force_prompt is True.
+    """
+    api_key = None
+
+    if not force_prompt:
+        api_key = keyring.get_password(SERVICE_NAME, USERNAME)
+
+    if not api_key or force_prompt:
+        typer.echo("Gemini API key is not set or invalid.")
+        api_key = typer.prompt(
+            "Please enter your Gemini API key",
+            hide_input=False,
+            confirmation_prompt=True,
+        )
+        keyring.set_password(SERVICE_NAME, USERNAME, api_key)
+        typer.echo("API key securely saved.")
+
+    return api_key
+
 
 if __name__ == "__main__":
     typer.run(main)
