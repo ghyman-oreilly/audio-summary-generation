@@ -47,14 +47,8 @@ VOICES = [
     "Sulafat"
 ]
 
-
-def _get_voice_choices(incomplete: str):
-    """
-    Returns a list of voice choices for autocompletion.
-    """
-    for voice in VOICES:
-        if voice.startswith(incomplete.lower()):
-            yield voice
+DEFAULT_SPEAKER_ONE_LABEL = 'Speaker 1'
+DEFAULT_SPEAKER_TWO_LABEL = 'Speaker 2'
 
 
 def main(
@@ -81,12 +75,13 @@ def main(
                 "Provide path to text file containing the transcript for your audio. "
                 "If providing this text file, the PDF path argument and text_summary_file options "
                 "don't need to be provided."
+                "Important: make sure your speakers are prefixed with "
+                "'Speaker 1:' and 'Speaker 2:' prefixes, unless you're setting "
+                "custom prefixes with the `--speaker-one-prefix` and `--speaker-two-prefix` flags."
             )
         ),
         speaker_one_voice: Optional[str] = typer.Option(
             None,
-            autocompletion=_get_voice_choices,
-            case_sensitive=False,
             help=(
                 f"Choose a voice for speaker one. "
                 f"Available options are: {', '.join(VOICES)} "
@@ -95,13 +90,29 @@ def main(
         ),
         speaker_two_voice: Optional[str] = typer.Option(
             None,
-            autocompletion=_get_voice_choices,
-            case_sensitive=False,
             help=(
                 f"Choose a voice for speaker one. "
                 f"Available options are: {', '.join(VOICES)} "
                 f"Be sure to select a different voice from you chose for speaker one! "
                 f"Default: random."
+            )
+        ),
+        speaker_one_prefix: Optional[str] = typer.Option(
+            None,
+            help=(
+                f"Choose a prefix/lavel for speaker one. "
+                f"Default: {DEFAULT_SPEAKER_ONE_LABEL}. "
+                f"Note: If running the script withe the `--transcript_file` flag, "
+                "this should match whatever you have in your transcript."
+            )
+        ),
+        speaker_two_prefix: Optional[str] = typer.Option(
+            None,
+            help=(
+                f"Choose a prefix/lavel for speaker two. "
+                f"Default: {DEFAULT_SPEAKER_TWO_LABEL}. "
+                f"Note: If running the script withe the `--transcript_file` flag, "
+                "this should match whatever you have in your transcript."
             )
         ),
 ):
@@ -153,6 +164,34 @@ def main(
         random_index = random.randint(0, len(voices_left_to_choose_from) - 1)
         speaker_two_voice = voices_left_to_choose_from.pop(random_index)
 
+    # set speaker labels
+    if speaker_one_prefix:
+        speaker_one_prefix = speaker_one_prefix.strip()
+        if speaker_one_prefix[-1] == ":":
+            chosen_speaker_one_prefix = speaker_one_prefix[:-1]
+        else:
+            chosen_speaker_one_prefix = speaker_one_prefix
+    else:
+        chosen_speaker_one_prefix = DEFAULT_SPEAKER_ONE_LABEL
+
+    if speaker_two_prefix:
+        speaker_two_prefix = speaker_two_prefix.strip()
+        if speaker_two_prefix[-1] == ":":
+            chosen_speaker_two_prefix = speaker_two_prefix[:-1]
+        else:
+            chosen_speaker_two_prefix = speaker_two_prefix
+    else:
+        chosen_speaker_two_prefix = DEFAULT_SPEAKER_TWO_LABEL
+
+    if chosen_speaker_one_prefix == chosen_speaker_two_prefix:
+        typer.echo(
+                f"Speaker prefixes/labels must be unique. "
+                f"Speaker 1 label: {chosen_speaker_one_prefix}, "
+                f"Speaker 2 label: {chosen_speaker_two_prefix}. "
+                f"Exiting."
+            )
+        raise typer.Exit(1)
+
     # generate text summary
     if path_to_pdf and not text_summary_file and not transcript_file:	
         if not file_is_valid(path_to_pdf, '.pdf', 20):
@@ -186,7 +225,11 @@ def main(
     # generate transcript
     if not transcript_file:
         typer.echo("Generating transcript from text summary. This may take a few minutes...")
-        transcript = generate_text(text_summary, TRANSCRIPT_SYS_INSTRUCTIONS, API_KEY, TEXT_MODEL)
+        sys_instrux = TRANSCRIPT_SYS_INSTRUCTIONS.format(
+            speaker_1=chosen_speaker_one_prefix, 
+            speaker_2=chosen_speaker_two_prefix
+        )
+        transcript = generate_text(text_summary, sys_instrux, API_KEY, TEXT_MODEL)
         transcript_output_path = Path(output_dir / f'transcript_{TIMESTAMP}.txt')
         write_text_to_file(transcript, transcript_output_path)
         typer.echo(f"Transcript written to {transcript_output_path}")
@@ -208,6 +251,20 @@ def main(
             raise typer.Exit(code=1)
         transcript = read_text_from_file(transcript_file)
 
+    # validate transcript
+    if (
+        not chosen_speaker_one_prefix in transcript
+        or not chosen_speaker_two_prefix in transcript
+    ):
+        typer.echo(
+            f"Selected speaker prefixes/labels not found in transcript. "
+            f"Please check and rerun script. "
+            f"Selected speaker 1 label: {chosen_speaker_one_prefix}, "
+            f"selected speaker 2 label: {chosen_speaker_two_prefix}. "
+            f"Exiting."
+        )
+        raise typer.Exit(1)
+
     # chunk transcript
     typer.echo("Chunking transcript. This may take a few minutes...")
     transcript_chunks = chunk_string(transcript, API_KEY, TTS_MODEL)
@@ -220,7 +277,9 @@ def main(
         TIMESTAMP, 
         output_dir,
         speaker_one_voice=speaker_one_voice,
-        speaker_two_voice=speaker_two_voice
+        speaker_two_voice=speaker_two_voice,
+        chosen_speaker_one_prefix=chosen_speaker_one_prefix,
+        chosen_speaker_two_prefix=chosen_speaker_two_prefix  
     )
 
     # combine chunk audio files
@@ -427,7 +486,9 @@ def generate_audio_chunks(
     api_key: Optional[str] = None,
     model_name: str = 'gemini-2.5-flash-preview-tts',
     speaker_one_voice: str = 'Puck',
-    speaker_two_voice: str = 'Zephyr'  
+    speaker_two_voice: str = 'Zephyr',
+    chosen_speaker_one_prefix: str = "Speaker 1",
+    chosen_speaker_two_prefix: str = "Speaker 2"  
 ):
     """
     Given a list of text chunks, generate
@@ -445,7 +506,9 @@ def generate_audio_chunks(
             api_key=api_key, 
             model_name=model_name,
             speaker_one_voice=speaker_one_voice,
-            speaker_two_voice=speaker_two_voice
+            speaker_two_voice=speaker_two_voice,
+            chosen_speaker_one_prefix=chosen_speaker_one_prefix,
+            chosen_speaker_two_prefix=chosen_speaker_two_prefix
         )
         audio_chunk_filepaths.append(audio_chunk_filepath)
         typer.echo(f"Audio chunk saved to {str(audio_chunk_filepath)}...")
@@ -459,7 +522,9 @@ def generate_audio_chunk_from_text_chunk(
     api_key: Optional[str] = None,
     model_name: str = 'gemini-2.5-flash-preview-tts',
     speaker_one_voice: str = 'Puck',
-    speaker_two_voice: str = 'Zephyr'        
+    speaker_two_voice: str = 'Zephyr',
+    chosen_speaker_one_prefix: str = "Speaker 1",
+    chosen_speaker_two_prefix: str = "Speaker 2"
 ):
     """
     Given a text prompt, generate audio
@@ -478,7 +543,7 @@ def generate_audio_chunk_from_text_chunk(
             multi_speaker_voice_config=types.MultiSpeakerVoiceConfig(
                 speaker_voice_configs=[
                 types.SpeakerVoiceConfig(
-                    speaker='Speaker 1', # TODO: need to validate in text and make this dynamic
+                    speaker=chosen_speaker_one_prefix,
                     voice_config=types.VoiceConfig(
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(
                             voice_name=speaker_one_voice,
@@ -486,7 +551,7 @@ def generate_audio_chunk_from_text_chunk(
                     )
                 ),
                 types.SpeakerVoiceConfig(
-                    speaker='Speaker 2', # TODO: need to validate in text and make this dynamic
+                    speaker=chosen_speaker_two_prefix,
                     voice_config=types.VoiceConfig(
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(
                             voice_name=speaker_two_voice,

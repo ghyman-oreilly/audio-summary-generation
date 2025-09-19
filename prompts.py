@@ -21,7 +21,7 @@ Using the text given by the user, generate a transcript of a podcast in the styl
 
 2. Dialog Structure:
 * Use two hosts who engage in a conversational back-and-forth.
-* Label their speech with "Speaker 1:" and "Speaker 2:"
+* Label their speech with "{speaker_1}:" and "{speaker_2}:"
 * The speakers should not address each other by name. 
 * Alternate between short, punchy statements and longer explanations, ensuring no dialogue turn is more than 25 words long.
 * Use frequent affirmations like “Right,” “Exactly,” and “Absolutely” to maintain flow and agreement.
