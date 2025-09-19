@@ -2,7 +2,6 @@ from google import genai
 from google.genai import types
 import keyring
 from pathlib import Path
-import os
 import random
 import time
 import typer
