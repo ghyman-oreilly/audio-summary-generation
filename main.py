@@ -116,7 +116,6 @@ def main(
             )
         ),
 ):
-
     API_KEY = check_api_key()
 
     TEXT_MODEL = 'gemini-2.5-flash'
@@ -132,82 +131,15 @@ def main(
     else:
         output_dir = Path.cwd()
 
-    voices_left_to_choose_from = list(VOICES)
-    
-    # remove selected voices from voice candidates list, as applicable
-    if speaker_one_voice:
-        try:
-            matching_index = voices_left_to_choose_from.index(speaker_one_voice)
-            voices_left_to_choose_from.pop(matching_index)
-        except:
-            typer.echo(f"Invalid voice ({speaker_one_voice}) selected for speaker one. Exiting.")
-            raise typer.Exit(1)
-    if speaker_two_voice:
-        try:
-            matching_index = voices_left_to_choose_from.index(speaker_two_voice)
-            voices_left_to_choose_from.pop(matching_index)
-        except:
-            typer.echo(f"Invalid voice ({speaker_two_voice}) selected for speaker two. Exiting.")
-            raise typer.Exit(1)
+    speaker_one_voice, speaker_two_voice = select_voices(speaker_one_voice, speaker_two_voice)
 
-    # set remaining voices, as applicable
-    if not speaker_one_voice:
-        random_index = random.randint(0, len(voices_left_to_choose_from) - 1)
-        speaker_one_voice = voices_left_to_choose_from.pop(random_index)
-    if not speaker_two_voice:
-        random_index = random.randint(0, len(voices_left_to_choose_from) - 1)
-        speaker_two_voice = voices_left_to_choose_from.pop(random_index)
-
-    # set speaker labels
-    if speaker_one_prefix:
-        speaker_one_prefix = speaker_one_prefix.strip()
-        if speaker_one_prefix[-1] == ":":
-            chosen_speaker_one_prefix = speaker_one_prefix[:-1]
-        else:
-            chosen_speaker_one_prefix = speaker_one_prefix
-    else:
-        chosen_speaker_one_prefix = DEFAULT_SPEAKER_ONE_LABEL
-
-    if speaker_two_prefix:
-        speaker_two_prefix = speaker_two_prefix.strip()
-        if speaker_two_prefix[-1] == ":":
-            chosen_speaker_two_prefix = speaker_two_prefix[:-1]
-        else:
-            chosen_speaker_two_prefix = speaker_two_prefix
-    else:
-        chosen_speaker_two_prefix = DEFAULT_SPEAKER_TWO_LABEL
-
-    if chosen_speaker_one_prefix == chosen_speaker_two_prefix:
-        typer.echo(
-                f"Speaker prefixes/labels must be unique. "
-                f"Speaker 1 label: {chosen_speaker_one_prefix}, "
-                f"Speaker 2 label: {chosen_speaker_two_prefix}. "
-                f"Exiting."
-            )
-        raise typer.Exit(1)
+    chosen_speaker_one_prefix, chosen_speaker_two_prefix = select_speaker_labels(
+        speaker_one_prefix, speaker_two_prefix
+    )
 
     # generate text summary
-    if path_to_pdf and not text_summary_file and not transcript_file:	
-        if not file_is_valid(path_to_pdf, '.pdf', 20):
-            typer.echo("Exiting...")
-            raise typer.Exit(code=1)
-
-        typer.echo("Generating text summary from PDF. This may take a few minutes...")
-        text_summary = infer_with_pdf_document_understanding(path_to_pdf, TEXT_SUMMARY_PROMPT, API_KEY, TEXT_MODEL)
-
-        if text_summary:
-            text_summary_output_path = Path(output_dir / f'text_summary_{TIMESTAMP}.txt')
-            write_text_to_file(text_summary, text_summary_output_path)
-            typer.echo(f"Text summary written to {text_summary_output_path}")
-            typer.confirm(
-                (
-                    "Do you wish to convert this summary to transcript?" 
-                    "To edit the summary first, choose No to exit, edit the summary file, "
-                    "then rerun the script using the `--text_summary_file` flag."
-                ),
-                False,
-                True,
-            )
+    if path_to_pdf and not text_summary_file and not transcript_file:
+        text_summary = execute_pdf_workflow(path_to_pdf, output_dir, API_KEY, TIMESTAMP, TEXT_MODEL)
 
     # handle existing/inputted text summary
     if text_summary_file:
@@ -218,24 +150,15 @@ def main(
     
     # generate transcript
     if not transcript_file:
-        typer.echo("Generating transcript from text summary. This may take a few minutes...")
-        sys_instrux = TRANSCRIPT_SYS_INSTRUCTIONS.format(
-            speaker_1=chosen_speaker_one_prefix, 
-            speaker_2=chosen_speaker_two_prefix
-        )
-        transcript = generate_text(text_summary, API_KEY, sys_instrux, TEXT_MODEL)
-        transcript_output_path = Path(output_dir / f'transcript_{TIMESTAMP}.txt')
-        write_text_to_file(transcript, transcript_output_path)
-        typer.echo(f"Transcript written to {transcript_output_path}")
-        typer.confirm(
-            (
-                "Do you wish to convert this transcript to audio?" 
-                "To edit the transcript first (which is highly recommended!), "
-                "choose No to exit, edit the transcript file, "
-                "then rerun the script using the `--transcript_file` flag."
-            ),
-            False,
-            True,
+        transcript = execute_transcript_generation_workflow(
+            text_summary,
+            output_dir,
+            API_KEY,
+            TRANSCRIPT_SYS_INSTRUCTIONS,
+            TIMESTAMP,
+            chosen_speaker_one_prefix,
+            chosen_speaker_two_prefix,
+            TEXT_MODEL
         )
 
     # handle existing/inputted transcript
@@ -246,9 +169,10 @@ def main(
         transcript = read_text_from_file(transcript_file)
 
     # validate transcript
-    if (
-        not chosen_speaker_one_prefix in transcript
-        or not chosen_speaker_two_prefix in transcript
+    if not transcript_validates(
+        transcript,
+        chosen_speaker_one_prefix,
+        chosen_speaker_two_prefix
     ):
         typer.echo(
             f"Selected speaker prefixes/labels not found in transcript. "
@@ -265,7 +189,10 @@ def main(
     typer.echo(f"Transcript split into {len(transcript_chunks)} chunks.")
 
     # generate audio from chunks
-    typer.echo("Generating audio from transcript chunks. This could take a while (up to 10 minutes per chunk)...")
+    typer.echo(
+                "Generating audio from transcript chunks. "
+                "This could take a while (up to 10 minutes per chunk)..."
+            )
     audio_chunk_filepaths: List[Path] = generate_audio_chunks(
         transcript_chunks, 
         TIMESTAMP, 
@@ -639,6 +566,166 @@ def check_api_key(force_prompt: bool = False) -> str:
         typer.echo("API key securely saved.")
 
     return api_key
+
+
+def select_voices(
+    speaker_one_voice: Optional[str],
+    speaker_two_voice: Optional[str]
+):
+    """
+    Select TTS voices, based on user input and defaults.
+    """
+    voices_left_to_choose_from = list(VOICES)
+    
+    # remove selected voices from voice candidates list, as applicable
+    if speaker_one_voice:
+        try:
+            matching_index = voices_left_to_choose_from.index(speaker_one_voice)
+            voices_left_to_choose_from.pop(matching_index)
+        except:
+            typer.echo(f"Invalid voice ({speaker_one_voice}) selected for speaker one. Exiting.")
+            raise typer.Exit(1)
+    if speaker_two_voice:
+        try:
+            matching_index = voices_left_to_choose_from.index(speaker_two_voice)
+            voices_left_to_choose_from.pop(matching_index)
+        except:
+            typer.echo(f"Invalid voice ({speaker_two_voice}) selected for speaker two. Exiting.")
+            raise typer.Exit(1)
+
+    # set remaining voices, as applicable
+    if not speaker_one_voice:
+        random_index = random.randint(0, len(voices_left_to_choose_from) - 1)
+        speaker_one_voice = voices_left_to_choose_from.pop(random_index)
+    if not speaker_two_voice:
+        random_index = random.randint(0, len(voices_left_to_choose_from) - 1)
+        speaker_two_voice = voices_left_to_choose_from.pop(random_index)    
+    
+    return speaker_one_voice, speaker_two_voice
+
+
+def select_speaker_labels(
+    speaker_one_prefix: Optional[str],
+    speaker_two_prefix: Optional[str]
+):
+    """
+    Select labels for/in transcript and for use in multvoice TTS, 
+    based on user input and defaults.
+    """
+    if speaker_one_prefix:
+        speaker_one_prefix = speaker_one_prefix.strip()
+        if speaker_one_prefix[-1] == ":":
+            chosen_speaker_one_prefix = speaker_one_prefix[:-1]
+        else:
+            chosen_speaker_one_prefix = speaker_one_prefix
+    else:
+        chosen_speaker_one_prefix = DEFAULT_SPEAKER_ONE_LABEL
+
+    if speaker_two_prefix:
+        speaker_two_prefix = speaker_two_prefix.strip()
+        if speaker_two_prefix[-1] == ":":
+            chosen_speaker_two_prefix = speaker_two_prefix[:-1]
+        else:
+            chosen_speaker_two_prefix = speaker_two_prefix
+    else:
+        chosen_speaker_two_prefix = DEFAULT_SPEAKER_TWO_LABEL
+
+    if chosen_speaker_one_prefix == chosen_speaker_two_prefix:
+        typer.echo(
+                f"Speaker prefixes/labels must be unique. "
+                f"Speaker 1 label: {chosen_speaker_one_prefix}, "
+                f"Speaker 2 label: {chosen_speaker_two_prefix}. "
+                f"Exiting."
+            )
+        raise typer.Exit(1)
+
+    return chosen_speaker_one_prefix, chosen_speaker_two_prefix
+
+
+def execute_pdf_workflow(
+    path_to_pdf: Path,
+    output_dir: Path,
+    api_key: str,
+    timestamp: int,
+    text_model: str = 'gemini-2.5-flash'
+):
+    """
+    Workflow for performing document-understanding inference
+    when PDF is passed in for summarization.
+    """
+    if not file_is_valid(path_to_pdf, '.pdf', 20):
+        typer.echo("Exiting...")
+        raise typer.Exit(code=1)        
+    typer.echo("Generating text summary from PDF. This may take a few minutes...")	    
+    text_summary = infer_with_pdf_document_understanding(path_to_pdf, TEXT_SUMMARY_PROMPT, api_key, text_model)
+
+    if text_summary:
+        text_summary_output_path = Path(output_dir / f'text_summary_{timestamp}.txt')
+        write_text_to_file(text_summary, text_summary_output_path)
+        typer.echo(f"Text summary written to {text_summary_output_path}")
+        typer.confirm(
+            (
+                "Do you wish to convert this summary to transcript?" 
+                "To edit the summary first, choose No to exit, edit the summary file, "
+                "then rerun the script using the `--text_summary_file` flag."
+            ),
+            False,
+            True,
+        )
+        return text_summary
+
+
+def execute_transcript_generation_workflow(
+    text_summary: str,
+    output_dir: Path,
+    api_key: str,
+    unformatted_sys_instrux: str,
+    timestamp: int,
+    chosen_speaker_one_prefix: str,
+    chosen_speaker_two_prefix: str,
+    text_model: str = 'gemini-2.5-flash',
+):
+    """
+    Workflow for generating a podcast transcript from
+    text summary.
+    """
+    typer.echo("Generating transcript from text summary. This may take a few minutes...")
+    sys_instrux = unformatted_sys_instrux.format(
+        speaker_1=chosen_speaker_one_prefix, 
+        speaker_2=chosen_speaker_two_prefix
+    )
+    transcript = generate_text(text_summary, api_key, sys_instrux, text_model)
+    transcript_output_path = Path(output_dir / f'transcript_{timestamp}.txt')
+    write_text_to_file(transcript, transcript_output_path)
+    typer.echo(f"Transcript written to {transcript_output_path}")
+    typer.confirm(
+        (
+            "Do you wish to convert this transcript to audio?" 
+            "To edit the transcript first (which is highly recommended!), "
+            "choose No to exit, edit the transcript file, "
+            "then rerun the script using the `--transcript_file` flag."
+        ),
+        False,
+        True,
+    )
+    return transcript
+
+
+def transcript_validates(
+    transcript: str,
+    chosen_speaker_one_prefix: str,
+    chosen_speaker_two_prefix: str
+):
+    """
+    Make sure transcript has the expected
+    speaker labels
+    """
+    if (
+        not chosen_speaker_one_prefix in transcript
+        or not chosen_speaker_two_prefix in transcript
+    ):
+        return False
+    return True
 
 
 if __name__ == "__main__":
