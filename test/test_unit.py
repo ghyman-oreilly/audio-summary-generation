@@ -16,9 +16,11 @@ from main import (
     DEFAULT_SPEAKER_ONE_LABEL,
     DEFAULT_SPEAKER_TWO_LABEL,
     delete_files,
-    dir_is_valid, 
+    dir_is_valid,
+    execute_pdf_workflow, 
     file_is_valid,
     generate_audio_chunk_from_text_chunk,
+    generate_audio_chunks,
     generate_text,
     infer_with_pdf_document_understanding,
     read_text_from_file,
@@ -133,6 +135,17 @@ def audio_output_filepath():
         os.remove(output_filepath)
 
 @pytest.fixture
+def output_dir():
+    tmpdir_obj = tempfile.TemporaryDirectory()
+    output_filepath = tmpdir_obj.name
+    yield Path(output_filepath)
+    tmpdir_obj.cleanup()
+
+@pytest.fixture
+def api_key():
+    yield "my_api_key"
+
+@pytest.fixture
 def genai_client_mock():
     mock_client = MagicMock()
 
@@ -205,7 +218,7 @@ def test_file_is_valid(dummy_file, filetype, size, expected_suffix, max_size_mb,
     path_to_file = dummy_file(filetype, size)
     assert file_is_valid(path_to_file, expected_suffix, max_size_mb) == expected
 
-def test_infer_with_pdf_document_understanding(dummy_file, genai_client_mock):
+def test_infer_with_pdf_document_understanding(dummy_file, genai_client_mock, api_key):
     """
     `infer_with_pdf_document_understanding` is a thin wrapper
     around API calls, so we're just spot-checking the signature
@@ -214,7 +227,6 @@ def test_infer_with_pdf_document_understanding(dummy_file, genai_client_mock):
     
     pdf_filepath = dummy_file('pdf')
     prompt = "Please summarize this document."
-    api_key = "my_api_key"
     expected_response = "That's a great document!"
     set_expected_response(expected_response)
 
@@ -229,14 +241,13 @@ def test_infer_with_pdf_document_understanding(dummy_file, genai_client_mock):
         pytest.param(None, "I'm a loser baby!", id="no-sys-instrux"),
     ],
 )
-def test_generate_text(sys_instrux, expected_response, genai_client_mock):
+def test_generate_text(sys_instrux, expected_response, genai_client_mock, api_key):
     """
     Another test for a thin wrapper around 
     genai service calls
     """
     _, _, set_expected_response = genai_client_mock
     user_prompt = "Tell me about yourself."
-    api_key = "my_api_key"
     set_expected_response(expected_response, has_sys_instrux=bool(sys_instrux))
     response = generate_text(user_prompt, api_key, sys_instrux)
     assert response == expected_response
@@ -263,9 +274,16 @@ def test_read_text_from_file(dummy_file):
 def test_chunk_string(
     token_limit, 
     expected_chunks, 
+    api_key,
     genai_client_mock # mock genai.Client and its count_tokens method
 ):
-    base_string = "I'm baby schlitz health goth pok pok next level brunch shaman butcher hell of aesthetic. Blog food truck jean shorts street art bespoke raw denim yes plz fixie yuccie, subway tile everyday carry flexitarian tote bag. Hammock poke irony photo booth, meh tumeric whatever same 8-bit vinyl ascot cliche kinfolk tote bag unicorn. Ramps lomo trust fund, bespoke irony vape lyft blog unicorn hell of biodiesel yr."
+    base_string = (
+        "I'm baby schlitz health goth pok pok next level brunch shaman butcher hell of aesthetic. "
+        "Blog food truck jean shorts street art bespoke raw denim yes plz fixie yuccie, subway tile "
+        "everyday carry flexitarian tote bag. Hammock poke irony photo booth, meh tumeric whatever "
+        "same 8-bit vinyl ascot cliche kinfolk tote bag unicorn. Ramps lomo trust fund, bespoke irony "
+        "vape lyft blog unicorn hell of biodiesel yr."
+    )
 
     _, set_count_tokens, _ = genai_client_mock
 
@@ -273,7 +291,7 @@ def test_chunk_string(
 
     my_string = (base_string + '\n') * 300 
 
-    chunked_strings = chunk_string(my_string, "my_api_key", token_limit=token_limit)
+    chunked_strings = chunk_string(my_string, api_key, token_limit=token_limit)
 
     assert len(chunked_strings) == expected_chunks
 
@@ -281,16 +299,21 @@ def test_chunk_string(
         assert isinstance(chunk, str) == True
         assert chunk != ""
 
-def test_generate_audio_chunks():
-    # TODO: write test
-    pass
+def test_generate_audio_chunks(output_dir, api_key):
+    text_chunks = ["hello", "world"]
+    timestamp = 123456
+    expected_filepath_one = Path(output_dir / f'audio_chunk_000_{timestamp}.wav')
+    expected_filepath_two = Path(output_dir / f'audio_chunk_001_{timestamp}.wav')
+    with patch('main.generate_audio_chunk_from_text_chunk', return_value=None):
+        audio_chunk_filepaths = generate_audio_chunks(text_chunks, timestamp, output_dir, api_key)
+        assert len(audio_chunk_filepaths) == 2
+        assert audio_chunk_filepaths[0] == expected_filepath_one
+        assert audio_chunk_filepaths[1] == expected_filepath_two
 
-
-def test_generate_audio_chunk_from_text_chunk(audio_output_filepath, wav_file_data, genai_client_mock):
+def test_generate_audio_chunk_from_text_chunk(audio_output_filepath, wav_file_data, genai_client_mock, api_key):
     _, _, set_expected_response = genai_client_mock
     text = "Hello"
     output_filepath = audio_output_filepath
-    api_key = "my_api_key"
     input_filepath = 'test/test_data/chunk_audio_00.wav'
     expected_response = wav_file_data(input_filepath).get('audio_data')
     set_expected_response(expected_response, is_audio_generation=True)
@@ -422,9 +445,33 @@ def test_select_speaker_labels(label_one, label_two, is_invalid):
             assert speaker_label_one == label_one.replace(':', '') if label_one else True
             assert speaker_label_two == label_two.replace(':', '') if label_two else True
 
-def test_execute_pdf_workflow():
-    # TODO: write test
-    pass
+@pytest.mark.parametrize(
+    "input_file_is_valid",
+    [
+        pytest.param(True, id='valid-input-file'),
+        pytest.param(False, id='invalid-input-file')
+    ],
+)
+def test_execute_pdf_workflow(dummy_file, input_file_is_valid, output_dir, api_key):
+    timestamp = 123456
+    expected_text_summary = "What a great text!"
+    expected_output_file = output_dir / f'text_summary_{timestamp}.txt'
+    if input_file_is_valid:
+        input_filepath = dummy_file('pdf', 2 * 1024 * 1024)
+        with (
+            patch('main.infer_with_pdf_document_understanding', return_value=expected_text_summary),
+            patch('main.typer.confirm', return_value=True),
+        ):
+            text_summary = execute_pdf_workflow(input_filepath, output_dir, api_key, timestamp)
+            assert text_summary == expected_text_summary
+            with open(expected_output_file, 'r') as f:
+                assert f.read() == expected_text_summary
+    else:
+        input_filepath = dummy_file('txt', 2 * 1024 * 1024)
+        with pytest.raises(typer.Exit) as exc_info:
+            text_summary = execute_pdf_workflow(input_filepath, output_dir, api_key, timestamp)
+            assert exc_info.value.exit_code == 1
+    
 
 def test_execute_transcript_generation_workflow():
     # TODO: write test
