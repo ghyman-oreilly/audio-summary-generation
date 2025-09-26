@@ -4,11 +4,9 @@ import pytest
 import random
 import tempfile
 import typer
-from types import SimpleNamespace
-from typing import Literal
-from unittest.mock import patch, MagicMock
-import wave
+from unittest.mock import patch
 
+from conftest import MINIMAL_FILE_CONTENT
 from main import (
     check_api_key,
     chunk_string,
@@ -18,7 +16,9 @@ from main import (
     delete_files,
     dir_is_valid,
     execute_pdf_workflow, 
+    execute_transcript_generation_workflow,
     file_is_valid,
+    format_sys_instrux,
     generate_audio_chunk_from_text_chunk,
     generate_audio_chunks,
     generate_text,
@@ -29,102 +29,16 @@ from main import (
     select_speaker_labels,
     transcript_validates,
     USERNAME,
+    validate_sys_instrux_format,
     VOICES,
     write_audio_data_to_wav_file,
     write_text_to_file
 )
+from prompts import TRANSCRIPT_SYS_INSTRUCTIONS
 
 
 VOICE_ONE, VOICE_TWO = random.sample(VOICES, 2)
 
-MINIMAL_FILE_CONTENT = {
-    'pdf': b"""%PDF-1.4
-1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
-endobj
-2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
-endobj
-3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>
-endobj
-xref
-0 4
-0000000000 65535 f
-0000000010 00000 n
-0000000060 00000 n
-0000000120 00000 n
-trailer
-<< /Root 1 0 R /Size 4 >>
-startxref
-180
-%%EOF
-""",
-    'txt': b'lorem ipsum'
-}
-
-
-@pytest.fixture
-def dummy_file():
-    """
-    Fixture that returns a function to generate a temporary dummy file of a given size.
-    The file is automatically deleted after the test finishes.
-
-    Usage:
-        def test_something(dummy_file):
-            path = dummy_file('pdf', 2 * 1024 * 1024)  # 2 MB
-            assert os.path.getsize(path) >= 2 * 1024 * 1024
-    """
-    temp_files = []
-
-    def _make_dummy_file(
-            filetype: Literal['pdf', 'txt'],
-            min_bytes: int = 0
-        ) -> str:
-        fd, path = tempfile.mkstemp(suffix=f".{filetype}")
-        os.close(fd)
-        temp_files.append(path)
-
-        # Minimal content
-        content = MINIMAL_FILE_CONTENT.get(filetype, 'pdf')
-
-        # Pad with null bytes if necessary
-        if len(content) < min_bytes:
-            content += b"\0" * (min_bytes - len(content))
-
-        with open(path, "wb") as f:
-            f.write(content)
-
-        return Path(path)
-
-    yield _make_dummy_file
-
-    # Cleanup after test
-    for path in temp_files:
-        try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
-
-@pytest.fixture
-def wav_file_data():
-    def _get_wav_file_data(input_filepath: str):
-        with wave.open(input_filepath, "rb") as wf:
-            n_frames = wf.getnframes()       # number of frames
-            n_channels = wf.getnchannels()   # number of channels
-            framerate = wf.getframerate() # sample rate (samples per second)
-            sampwidth = wf.getsampwidth()    # bytes per sample
-            audio_data_size = n_frames * n_channels * sampwidth # audio data size in bytes
-            audio_data = wf.readframes(n_frames)  # read all audio frames
-        return {
-            "num_frames": n_frames,
-            "num_channels": n_channels,
-            "framerate": framerate,
-            "sample_width": sampwidth,
-            "audio_data_size_in_bytes": audio_data_size,
-            "audio_data": audio_data
-        }
-    yield _get_wav_file_data 
 
 @pytest.fixture
 def audio_output_filepath():
@@ -135,66 +49,8 @@ def audio_output_filepath():
         os.remove(output_filepath)
 
 @pytest.fixture
-def output_dir():
-    tmpdir_obj = tempfile.TemporaryDirectory()
-    output_filepath = tmpdir_obj.name
-    yield Path(output_filepath)
-    tmpdir_obj.cleanup()
-
-@pytest.fixture
 def api_key():
     yield "my_api_key"
-
-@pytest.fixture
-def genai_client_mock():
-    mock_client = MagicMock()
-
-    class DummyTextResponse:
-        def __init__(self, text):
-            self.text = text
-    
-    class DummyAudioResponse:
-        def __init__(self, audio_data):
-            self.candidates = [
-                SimpleNamespace(
-                    content=SimpleNamespace(
-                        parts=[
-                            SimpleNamespace(
-                                inline_data=SimpleNamespace(
-                                    data=audio_data
-                                )
-                            )
-                        ]
-                    )
-                )
-            ]
-
-    def count_tokens_mock(text: str) -> int:
-        mock_resp = MagicMock()
-        mock_resp.total_tokens = max(1, len(text) // 4) # 1 token minimum, 4 chars per token
-        return mock_resp
-
-    def set_count_tokens():
-        mock_client.models.count_tokens.side_effect = lambda model, contents: count_tokens_mock(contents)
-
-    def set_expected_response(expected_response, has_sys_instrux = False, is_audio_generation = False):
-        if not has_sys_instrux and not is_audio_generation:
-            mock_client.models.generate_content.side_effect = (
-                lambda model, contents: DummyTextResponse(expected_response)
-            )
-        elif has_sys_instrux and not is_audio_generation:
-            mock_client.models.generate_content.side_effect = (
-                lambda model, config, contents: DummyTextResponse(expected_response)
-            )
-        elif is_audio_generation:
-            mock_client.models.generate_content.side_effect = (
-                lambda model, config, contents: DummyAudioResponse(expected_response)
-            )
-
-
-    with patch("main.genai.Client", return_value=mock_client):
-        yield mock_client, set_count_tokens, set_expected_response
-
 
 @pytest.mark.parametrize(
     "path_to_dir, expected",
@@ -472,10 +328,57 @@ def test_execute_pdf_workflow(dummy_file, input_file_is_valid, output_dir, api_k
             text_summary = execute_pdf_workflow(input_filepath, output_dir, api_key, timestamp)
             assert exc_info.value.exit_code == 1
     
+def test_format_sys_instrux():
+    template = "Label the speakers with {speaker_1} and {speaker_2}"
+    label_one = "Abby"
+    label_two = "Tiny"
+    expected = "Label the speakers with Abby and Tiny"
+    actual = format_sys_instrux(template, label_one, label_two)
+    assert actual == expected
 
-def test_execute_transcript_generation_workflow():
-    # TODO: write test
-    pass
+@pytest.mark.parametrize(
+    "template, expected",
+    [
+        pytest.param(
+            "Label the speakers with {speaker_1} and {speaker_2}", 
+            True, 
+            id='instrux-template-is-valid'
+        ),
+        pytest.param(
+            "You don't really need to label the speakers.",
+            False, 
+            id='instrux-template-is-invalid'
+        )
+    ],
+)
+def test_validate_sys_instrux_format(template, expected):
+    assert validate_sys_instrux_format(template) == expected
+
+def test_execute_transcript_generation_workflow(output_dir, api_key):
+    text_summary = "This is a great text!"
+    unformatted_sys_instrux = TRANSCRIPT_SYS_INSTRUCTIONS
+    timestamp = 123456
+    label_one = "Abby"
+    label_two = "Tiny"
+    expected_transcript = "Abby: This is a great text.\nTiny: I'm hungry!"
+    expected_output_filepath = Path(output_dir / f'transcript_{timestamp}.txt')
+    with (
+        patch('main.format_sys_instrux', return_value=unformatted_sys_instrux),
+        patch('main.generate_text', return_value=expected_transcript),
+        patch('main.typer.confirm', return_value=True)
+    ):
+        actual_transcript = execute_transcript_generation_workflow(
+            text_summary, 
+            output_dir, 
+            api_key,
+            unformatted_sys_instrux,
+            timestamp,
+            label_one,
+            label_two
+        )
+        assert actual_transcript == expected_transcript
+        with open(expected_output_filepath, 'r') as f:
+            assert f.read() == expected_transcript
 
 @pytest.mark.parametrize(
     "transcript, speaker1, speaker2, expected",
