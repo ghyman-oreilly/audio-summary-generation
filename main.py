@@ -690,9 +690,10 @@ def execute_transcript_generation_workflow(
     text summary.
     """
     typer.echo("Generating transcript from text summary. This may take a few minutes...")
-    sys_instrux = unformatted_sys_instrux.format(
-        speaker_1=chosen_speaker_one_prefix, 
-        speaker_2=chosen_speaker_two_prefix
+    sys_instrux = format_sys_instrux(
+        unformatted_sys_instrux, 
+        chosen_speaker_one_prefix,
+        chosen_speaker_two_prefix
     )
     transcript = generate_text(text_summary, api_key, sys_instrux, text_model)
     transcript_output_path = Path(output_dir / f'transcript_{timestamp}.txt')
@@ -710,6 +711,45 @@ def execute_transcript_generation_workflow(
     )
     return transcript
 
+def format_sys_instrux(
+    unformatted_sys_instrux: str,
+    chosen_speaker_one_prefix: str,
+    chosen_speaker_two_prefix: str,
+) -> str:
+    """
+    Format sys instrux template,
+    using the chosen speaker prefixes
+    to replace the placeholders.
+    """
+    if validate_sys_instrux_format:   
+        sys_instrux = unformatted_sys_instrux.format(
+        speaker_1=chosen_speaker_one_prefix, 
+        speaker_2=chosen_speaker_two_prefix
+        )
+        return sys_instrux
+    else:
+        typer.echo(
+            "`speaker_1` and `speaker_2` fields not found in "
+            "`unformatted_sys_instrux` template. Exiting."
+        )
+        raise typer.Exit(1)
+
+def validate_sys_instrux_format(
+    unformatted_sys_instrux: str
+) -> bool:
+    """
+    Check that unformatted sys instrux
+    template contains the expected fields.
+
+    We can probably make this more elegant
+    if we find we're adding fields over time.
+    """
+    if (
+        not '{speaker_1}' in unformatted_sys_instrux
+        or not not '{speaker_2}' in unformatted_sys_instrux
+    ):
+        return False
+    return True
 
 def transcript_validates(
     transcript: str,
