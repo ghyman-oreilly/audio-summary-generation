@@ -745,8 +745,8 @@ def validate_sys_instrux_format(
     if we find we're adding fields over time.
     """
     if (
-        not '{speaker_1}' in unformatted_sys_instrux
-        or not not '{speaker_2}' in unformatted_sys_instrux
+        '{speaker_1}' not in unformatted_sys_instrux
+        or '{speaker_2}' not in unformatted_sys_instrux
     ):
         return False
     return True
