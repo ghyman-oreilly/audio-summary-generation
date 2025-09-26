@@ -51,7 +51,7 @@ DEFAULT_SPEAKER_TWO_LABEL = 'Speaker 2'
 SERVICE_NAME = "audio_summary_generator"
 USERNAME = "google_api_key"
 
-def main(
+def cli(
         path_to_pdf: Optional[Path] = typer.Argument(
             None, help=(
                 "Provide path to a PDF file to run the full audio-summary generation workflow. "
@@ -116,6 +116,31 @@ def main(
             )
         ),
 ):
+    generate_audio_summary(
+        path_to_pdf,
+        output_dir,
+        text_summary_file,
+        transcript_file,
+        speaker_one_voice,
+        speaker_two_voice,
+        speaker_one_prefix,
+        speaker_two_prefix
+    )
+
+def generate_audio_summary(
+    path_to_pdf: Optional[Path],
+    output_dir: Optional[Path],
+    text_summary_file: Optional[Path] = None,
+    transcript_file: Optional[Path] = None,
+    speaker_one_voice: Optional[str] = None,
+    speaker_two_voice: Optional[str] = None,
+    speaker_one_prefix: Optional[str] = None,
+    speaker_two_prefix: Optional[str] = None
+):
+    """
+    Generate podcast-style audio summary
+    from a text PDF.
+    """
     API_KEY = check_api_key()
 
     TEXT_MODEL = 'gemini-2.5-flash'
@@ -769,4 +794,4 @@ def transcript_validates(
 
 
 if __name__ == "__main__":
-    typer.run(main)
+    typer.run(cli)
