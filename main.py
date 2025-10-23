@@ -1,3 +1,4 @@
+from elevenlabs import ElevenLabs
 from google import genai
 from google.genai import types
 import keyring
@@ -5,14 +6,16 @@ from pathlib import Path
 import random
 import time
 import typer
-from typing import List, Optional
+from typing import List, Literal, Optional
 import wave
 
 from prompts import TEXT_SUMMARY_PROMPT, TRANSCRIPT_SYS_INSTRUCTIONS
 
 
+app = typer.Typer()
+
 # https://ai.google.dev/gemini-api/docs/speech-generation
-VOICES = [
+VOICES_GOOGLE = [
     "Zephyr",
     "Puck",
     "Charon",
@@ -45,6 +48,9 @@ VOICES = [
     "Sulafat"
 ]
 
+DEFAULT_VOICE_ONE_ELEVENLABS = 'SAz9YHcvj6GT2YYXdXww' # River
+DEFAULT_VOICE_TWO_ELEVENLABS = 'TX3LPaxmHKxFdv7VOQHJ' # Liam
+
 DEFAULT_SPEAKER_ONE_LABEL = 'Speaker 1'
 DEFAULT_SPEAKER_TWO_LABEL = 'Speaker 2'
 
@@ -53,7 +59,74 @@ SERVICE_NAME = "audio_summary_generator"
 GEMINI_KEY_USER_NAME = "google_api_key"
 ELEVENLABS_KEY_USER_NAME = "elevenlabs_api_key"
 
-def cli(
+@app.command(
+    help="""
+    Generate podcast-style audio summary using the default
+    TTS service provider (ElevenLabs). 
+    """
+)
+def generate(
+        path_to_pdf: Optional[Path] = typer.Argument(
+            None, help=(
+                "Provide path to a PDF file to run the full audio-summary generation workflow. "
+                "PDF must be less than 20MB."
+            )
+        ),
+        output_dir: Optional[Path] = typer.Option(
+            None, help=(
+                "Provide directory where output files (text, audio) should be saved. "
+                "Defaults to current working directory."
+            )
+        ),
+        text_summary_file: Optional[Path] = typer.Option(
+            None, help=(
+                "Provide path to text file containing the summary of your PDF. "
+                "If providing this text file, the PDF path argument doesn't need to be provided."
+            )
+        ),
+        transcript_file: Optional[Path] = typer.Option(
+            None, help=(
+                "Provide path to text file containing the transcript for your audio. "
+                "If providing this text file, the PDF path argument and text_summary_file options "
+                "don't need to be provided."
+                "Important: make sure your speakers are prefixed with "
+                "'Speaker 1:' and 'Speaker 2:' prefixes, unless you're setting "
+                "custom prefixes with the `--speaker-one-prefix` and `--speaker-two-prefix` flags."
+            )
+        ),
+        speaker_one_voice: Optional[str] = typer.Option(
+            DEFAULT_VOICE_ONE_ELEVENLABS,
+            help=(
+                f"Enter an ElevenLabs voice ID. "
+                f"Default: {DEFAULT_VOICE_ONE_ELEVENLABS}."
+            )
+        ),
+        speaker_two_voice: Optional[str] = typer.Option(
+            DEFAULT_VOICE_TWO_ELEVENLABS,
+            help=(
+                f"Enter an ElevenLabs voice ID. "
+                f"Be sure to select a different voice from you chose for speaker one! "
+                f"Default: {DEFAULT_VOICE_TWO_ELEVENLABS}."
+            )
+        ),
+):
+    generate_audio_summary(
+        path_to_pdf,
+        output_dir,
+        'elevenlabs',
+        text_summary_file,
+        transcript_file,
+        speaker_one_voice,
+        speaker_two_voice,
+    )
+
+@app.command(
+    help="""
+    Generate podcast-style audio summary using an alternative
+    TTS service provider (Google). 
+    """
+)
+def generate_w_google(
         path_to_pdf: Optional[Path] = typer.Argument(
             None, help=(
                 "Provide path to a PDF file to run the full audio-summary generation workflow. "
@@ -86,7 +159,7 @@ def cli(
             None,
             help=(
                 f"Choose a voice for speaker one. "
-                f"Available options are: {', '.join(VOICES)} "
+                f"Available options are: {', '.join(VOICES_GOOGLE)} "
                 f"Default: random."
             )
         ),
@@ -94,7 +167,7 @@ def cli(
             None,
             help=(
                 f"Choose a voice for speaker one. "
-                f"Available options are: {', '.join(VOICES)} "
+                f"Available options are: {', '.join(VOICES_GOOGLE)} "
                 f"Be sure to select a different voice from you chose for speaker one! "
                 f"Default: random."
             )
@@ -121,6 +194,7 @@ def cli(
     generate_audio_summary(
         path_to_pdf,
         output_dir,
+        'google',
         text_summary_file,
         transcript_file,
         speaker_one_voice,
@@ -132,6 +206,7 @@ def cli(
 def generate_audio_summary(
     path_to_pdf: Optional[Path],
     output_dir: Optional[Path],
+    tts_provider: Literal['google', 'elevenlabs'],
     text_summary_file: Optional[Path] = None,
     transcript_file: Optional[Path] = None,
     speaker_one_voice: Optional[str] = None,
@@ -144,10 +219,16 @@ def generate_audio_summary(
     from a text PDF.
     """
     GEMINI_API_KEY = check_api_key(SERVICE_NAME, GEMINI_KEY_USER_NAME)
-    ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
+    ELEVENLABS_API_KEY = None
+    elevenlabs_client = None
+
+    if tts_provider == 'elevenlabs':
+        ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
+        elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+        validate_voices_elevenlabs(elevenlabs_client, speaker_one_voice, speaker_two_voice)
 
     TEXT_MODEL = 'gemini-2.5-flash'
-    TTS_MODEL = 'gemini-2.5-flash-preview-tts'
+    TTS_MODEL_GOOGLE = 'gemini-2.5-flash-preview-tts'
 
     TIMESTAMP = int(time.time())
     
@@ -159,7 +240,7 @@ def generate_audio_summary(
     else:
         output_dir = Path.cwd()
 
-    speaker_one_voice, speaker_two_voice = select_voices(speaker_one_voice, speaker_two_voice)
+    speaker_one_voice, speaker_two_voice = select_voices_google(speaker_one_voice, speaker_two_voice)
 
     chosen_speaker_one_prefix, chosen_speaker_two_prefix = select_speaker_labels(
         speaker_one_prefix, speaker_two_prefix
@@ -213,7 +294,7 @@ def generate_audio_summary(
 
     # chunk transcript
     typer.echo("Chunking transcript. This may take a few minutes...")
-    transcript_chunks = chunk_string(transcript, GEMINI_API_KEY, TTS_MODEL)
+    transcript_chunks = chunk_string(transcript, GEMINI_API_KEY, TTS_MODEL_GOOGLE)
     typer.echo(f"Transcript split into {len(transcript_chunks)} chunks.")
 
     # generate audio from chunks
@@ -600,14 +681,45 @@ def check_api_key(
     return api_key
 
 
-def select_voices(
+def validate_voices_elevenlabs(
+    client: ElevenLabs,
+    speaker_one_voice: str,
+    speaker_two_voice: str
+):
+    """
+    Validate user/default selections against
+    list retrieved from ElevenLabs API
+    """
+    is_invalid = False
+    
+    voice_one_result = client.voices.search(
+        voice_ids=[speaker_one_voice]
+    ).voices
+
+    voice_two_result = client.voices.search(
+        voice_ids=[speaker_two_voice]
+    ).voices
+
+    if len(voice_one_result) != 1:
+        typer.echo(f"Voice selection one ({speaker_one_voice}) is invalid.")
+        is_invalid = True
+    if len(voice_two_result) != 1:
+        typer.echo(f"Voice selection two ({speaker_two_voice}) is invalid.")
+        is_invalid = True
+    if is_invalid:
+        typer.echo("Please rerun the script with valid voice selections.")
+        raise typer.Exit(1)
+
+
+
+def select_voices_google(
     speaker_one_voice: Optional[str],
     speaker_two_voice: Optional[str]
 ):
     """
-    Select TTS voices, based on user input and defaults.
+    Select Google TTS voices, based on user input and defaults.
     """
-    voices_left_to_choose_from = list(VOICES)
+    voices_left_to_choose_from = list(VOICES_GOOGLE)
     
     # remove selected voices from voice candidates list, as applicable
     if speaker_one_voice:
@@ -801,4 +913,4 @@ def transcript_validates(
 
 
 if __name__ == "__main__":
-    typer.run(cli)
+    app()

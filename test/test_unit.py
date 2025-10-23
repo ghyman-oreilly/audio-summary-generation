@@ -24,20 +24,20 @@ from main import (
     generate_text,
     infer_with_pdf_document_understanding,
     read_text_from_file,
-    select_voices,
+    select_voices_google,
     SERVICE_NAME,
     select_speaker_labels,
     transcript_validates,
     USERNAME,
     validate_sys_instrux_format,
-    VOICES,
+    VOICES_GOOGLE,
     write_audio_data_to_wav_file,
     write_text_to_file
 )
 from prompts import TRANSCRIPT_SYS_INSTRUCTIONS
 
 
-VOICE_ONE, VOICE_TWO = random.sample(VOICES, 2)
+VOICE_ONE, VOICE_TWO = random.sample(VOICES_GOOGLE, 2)
 
 
 @pytest.fixture
@@ -266,13 +266,13 @@ def test_check_api_key(key_value, force_prompt):
 def test_select_voices(voice_one, voice_two, is_invalid):
     if is_invalid:
         with pytest.raises(typer.Exit) as exc_info:
-            speaker_one_voice, speaker_two_voice = select_voices(voice_one, voice_two)
+            speaker_one_voice, speaker_two_voice = select_voices_google(voice_one, voice_two)
         assert exc_info.value.exit_code == 1
     else:
-        speaker_one_voice, speaker_two_voice = select_voices(voice_one, voice_two)
+        speaker_one_voice, speaker_two_voice = select_voices_google(voice_one, voice_two)
         assert speaker_one_voice != speaker_two_voice
-        assert speaker_one_voice in VOICES
-        assert speaker_two_voice in VOICES
+        assert speaker_one_voice in VOICES_GOOGLE
+        assert speaker_two_voice in VOICES_GOOGLE
 
 @pytest.mark.parametrize(
     "label_one, label_two, is_invalid",
