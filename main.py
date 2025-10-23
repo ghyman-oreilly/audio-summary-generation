@@ -48,8 +48,10 @@ VOICES = [
 DEFAULT_SPEAKER_ONE_LABEL = 'Speaker 1'
 DEFAULT_SPEAKER_TWO_LABEL = 'Speaker 2'
 
+# keychain deets
 SERVICE_NAME = "audio_summary_generator"
-USERNAME = "google_api_key"
+GEMINI_KEY_USER_NAME = "google_api_key"
+ELEVENLABS_KEY_USER_NAME = "elevenlabs_api_key"
 
 def cli(
         path_to_pdf: Optional[Path] = typer.Argument(
@@ -141,7 +143,8 @@ def generate_audio_summary(
     Generate podcast-style audio summary
     from a text PDF.
     """
-    API_KEY = check_api_key()
+    GEMINI_API_KEY = check_api_key(SERVICE_NAME, GEMINI_KEY_USER_NAME)
+    ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
 
     TEXT_MODEL = 'gemini-2.5-flash'
     TTS_MODEL = 'gemini-2.5-flash-preview-tts'
@@ -164,7 +167,7 @@ def generate_audio_summary(
 
     # generate text summary
     if path_to_pdf and not text_summary_file and not transcript_file:
-        text_summary = execute_pdf_workflow(path_to_pdf, output_dir, API_KEY, TIMESTAMP, TEXT_MODEL)
+        text_summary = execute_pdf_workflow(path_to_pdf, output_dir, GEMINI_API_KEY, TIMESTAMP, TEXT_MODEL)
 
     # handle existing/inputted text summary
     if text_summary_file:
@@ -178,7 +181,7 @@ def generate_audio_summary(
         transcript = execute_transcript_generation_workflow(
             text_summary,
             output_dir,
-            API_KEY,
+            GEMINI_API_KEY,
             TRANSCRIPT_SYS_INSTRUCTIONS,
             TIMESTAMP,
             chosen_speaker_one_prefix,
@@ -210,7 +213,7 @@ def generate_audio_summary(
 
     # chunk transcript
     typer.echo("Chunking transcript. This may take a few minutes...")
-    transcript_chunks = chunk_string(transcript, API_KEY, TTS_MODEL)
+    transcript_chunks = chunk_string(transcript, GEMINI_API_KEY, TTS_MODEL)
     typer.echo(f"Transcript split into {len(transcript_chunks)} chunks.")
 
     # generate audio from chunks
@@ -222,7 +225,7 @@ def generate_audio_summary(
         transcript_chunks, 
         TIMESTAMP, 
         output_dir,
-        API_KEY,
+        GEMINI_API_KEY,
         speaker_one_voice=speaker_one_voice,
         speaker_two_voice=speaker_two_voice,
         chosen_speaker_one_prefix=chosen_speaker_one_prefix,
@@ -570,24 +573,28 @@ def delete_files(
             typer.echo(f"An error occurred while deleting {file_path}: {e}")
 
 
-def check_api_key(force_prompt: bool = False) -> str:
+def check_api_key(
+        service_name: str,
+        username: str,
+        force_prompt: bool = False
+    ) -> str:
     """
-    Retrieve Gemini API key from keyring, prompt user if not 
+    Retrieve API key from keyring, prompt user if not 
     found or force_prompt is True.
     """
     api_key = None
 
     if not force_prompt:
-        api_key = keyring.get_password(SERVICE_NAME, USERNAME)
+        api_key = keyring.get_password(service_name, username)
 
     if not api_key or force_prompt:
-        typer.echo("Gemini API key is not set or invalid.")
+        typer.echo(f"{username} API key is not set or invalid.")
         api_key = typer.prompt(
-            "Please enter your Gemini API key",
+            f"Please enter your {username} API key",
             hide_input=False,
             confirmation_prompt=True,
         )
-        keyring.set_password(SERVICE_NAME, USERNAME, api_key)
+        keyring.set_password(service_name, username, api_key)
         typer.echo("API key securely saved.")
 
     return api_key
