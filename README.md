@@ -4,8 +4,9 @@ A set of tools for generating a podcast-style audio summary from book PDF.
 
 ## Requirements
 
-* Python 3.9+
+* Python 3.11+
 * [Gemini API or Google API key](https://ai.google.dev/gemini-api/docs/api-key)
+* ElevenLabs API key
 
 ## Setup
 
