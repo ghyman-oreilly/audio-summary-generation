@@ -362,7 +362,7 @@ def generate_audio_summary(
     if tts_provider == 'elevenlabs':
         transcript_chunks = generate_text_to_dialogue_payloads(transcript, speaker_one_voice, speaker_two_voice)
     else:
-        transcript_chunks = chunk_string(transcript, GEMINI_API_KEY, TTS_MODEL_GOOGLE)
+        transcript_chunks = chunk_string(transcript)
     typer.echo(f"Transcript split into {len(transcript_chunks)} chunks.")
 
     # generate audio from chunks
@@ -531,13 +531,9 @@ def generate_text_to_dialogue_payloads(
     char_limit: int = 3000
 ):
     """
-    Split a transcript string into payloads
-    for the ElevenLabs Text to Dialog API, remaining
-    under a given character limit.
-
-    Character limit for ElevenLabs v3 model
-    (required for use with Text to Dialog API) 
-    is 3000 characters.
+    Assign voice IDs to unlabeled transcript chunks
+    and inject into payloads, for use with ElevenLabs
+    Text to Dialog API.
     """
     payloads = []
     snippets = [line for line in transcript.splitlines() if line]
@@ -567,52 +563,33 @@ def generate_text_to_dialogue_payloads(
     return payloads
         
 
-
 def chunk_string(
     text_string: str,
-    api_key: str,
-    model_name: str = 'gemini-2.5-flash-preview-tts',
-    token_limit: Optional[int] = None
+    char_limit: int = 3000
 ):
     """
     Generate a list of strings from a single string,
-    keeping within a specified token limit.
-
-    For use with Google TTS.
-    """
-    client = genai.Client(api_key=api_key)
-    
-    if not token_limit:
-        token_limit = 3000 # could use a map to allow for various models 
-                           # (note that count_tokens API method is NOT reliable)
-
+    keeping within a specified token limit. Used for
+    simply chunking for Google TTS.
+    """  
     chunks = []
-    current_chunk = ""
-    current_token_count = 0
-
-    lines = text_string.split('\n')
-
+    lines = [line for line in text_string.splitlines() if line]
+    text_char_count = 0
+    chunk = ''
     for line in lines:
-        response = client.models.count_tokens(
-            model=model_name,
-            contents=line
-        )
-        
-        line_token_count = response.total_tokens
+        text_char_count = text_char_count + len(line)
 
-        if current_token_count + line_token_count <= token_limit:
-            current_chunk += line + '\n'
-            current_token_count += line_token_count
-        else:
-            # Start a new chunk
-            chunks.append(current_chunk.strip())
-            current_chunk = line + '\n'
-            current_token_count = line_token_count
+        if text_char_count >= char_limit:
+            text_char_count = 0
+            if chunk:
+                chunks.append(chunk)
+                chunk = ''
 
-    # Add the last chunk to the list
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-
+        chunk += '\n\n' + line
+    
+    if chunk:
+        chunks.append(chunk)
+    
     return chunks
 
 
