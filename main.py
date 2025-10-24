@@ -226,6 +226,12 @@ def generate_audio_summary(
         ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
         elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
         validate_voices_elevenlabs(elevenlabs_client, speaker_one_voice, speaker_two_voice)
+    else:
+        speaker_one_voice, speaker_two_voice = select_voices_google(speaker_one_voice, speaker_two_voice)
+
+        speaker_one_prefix, speaker_two_prefix = clean_and_validate_speaker_labels(
+            speaker_one_prefix, speaker_two_prefix
+        )
 
     TEXT_MODEL = 'gemini-2.5-flash'
     TTS_MODEL_GOOGLE = 'gemini-2.5-flash-preview-tts'
@@ -239,12 +245,6 @@ def generate_audio_summary(
             raise typer.Exit(code=1)
     else:
         output_dir = Path.cwd()
-
-    speaker_one_voice, speaker_two_voice = select_voices_google(speaker_one_voice, speaker_two_voice)
-
-    chosen_speaker_one_prefix, chosen_speaker_two_prefix = select_speaker_labels(
-        speaker_one_prefix, speaker_two_prefix
-    )
 
     # generate text summary
     if path_to_pdf and not text_summary_file and not transcript_file:
@@ -265,8 +265,8 @@ def generate_audio_summary(
             GEMINI_API_KEY,
             TRANSCRIPT_SYS_INSTRUCTIONS,
             TIMESTAMP,
-            chosen_speaker_one_prefix,
-            chosen_speaker_two_prefix,
+            speaker_one_prefix,
+            speaker_two_prefix,
             TEXT_MODEL
         )
 
@@ -276,21 +276,6 @@ def generate_audio_summary(
             typer.echo("Exiting...")
             raise typer.Exit(code=1)
         transcript = read_text_from_file(transcript_file)
-
-    # validate transcript
-    if not transcript_validates(
-        transcript,
-        chosen_speaker_one_prefix,
-        chosen_speaker_two_prefix
-    ):
-        typer.echo(
-            f"Selected speaker prefixes/labels not found in transcript. "
-            f"Please check and rerun script. "
-            f"Selected speaker 1 label: {chosen_speaker_one_prefix}, "
-            f"selected speaker 2 label: {chosen_speaker_two_prefix}. "
-            f"Exiting."
-        )
-        raise typer.Exit(1)
 
     # chunk transcript
     typer.echo("Chunking transcript. This may take a few minutes...")
@@ -309,8 +294,8 @@ def generate_audio_summary(
         GEMINI_API_KEY,
         speaker_one_voice=speaker_one_voice,
         speaker_two_voice=speaker_two_voice,
-        chosen_speaker_one_prefix=chosen_speaker_one_prefix,
-        chosen_speaker_two_prefix=chosen_speaker_two_prefix  
+        chosen_speaker_one_prefix=speaker_one_prefix,
+        chosen_speaker_two_prefix=speaker_two_prefix  
     )
 
     # combine chunk audio files
@@ -711,7 +696,6 @@ def validate_voices_elevenlabs(
         raise typer.Exit(1)
 
 
-
 def select_voices_google(
     speaker_one_voice: Optional[str],
     speaker_two_voice: Optional[str]
@@ -748,13 +732,13 @@ def select_voices_google(
     return speaker_one_voice, speaker_two_voice
 
 
-def select_speaker_labels(
+def clean_and_validate_speaker_labels(
     speaker_one_prefix: Optional[str],
     speaker_two_prefix: Optional[str]
 ):
     """
-    Select labels for/in transcript and for use in multvoice TTS, 
-    based on user input and defaults.
+    Clean and validate speaker labels for/in transcript 
+    and for use in multivoice TTS, based on user input and defaults.
     """
     if speaker_one_prefix:
         speaker_one_prefix = speaker_one_prefix.strip()
@@ -818,15 +802,37 @@ def execute_pdf_workflow(
         )
         return text_summary
 
+def add_speaker_labels_to_transcript(
+    transcript: str,
+    speaker_one_prefix: str,
+    speaker_two_prefix: str
+):
+    """
+    Add speaker labels (Speaker 1, Speaker 2) to 
+    conversation turns in transcript.
+
+    Assumes transcript conversation turns are
+    newline delimited.
+    """
+    labeled_statements = []
+    original_statements = [line for line in transcript.splitlines() if line]
+    for ix, statement in enumerate(original_statements):
+        if ix == 0 or ix % 2 == 0:
+            statement = f"{speaker_one_prefix}: {statement}"
+        else:
+            statement = f"{speaker_two_prefix}: {statement}"
+        labeled_statements.append(statement)
+    labeled_transcript = '\n\n'.join(labeled_statements)
+    return labeled_transcript
 
 def execute_transcript_generation_workflow(
     text_summary: str,
     output_dir: Path,
     api_key: str,
-    unformatted_sys_instrux: str,
+    sys_instrux: str,
     timestamp: int,
-    chosen_speaker_one_prefix: str,
-    chosen_speaker_two_prefix: str,
+    speaker_one_prefix: Optional[str] = None,
+    speaker_two_prefix: Optional[str] = None,
     text_model: str = 'gemini-2.5-flash',
 ):
     """
@@ -834,12 +840,11 @@ def execute_transcript_generation_workflow(
     text summary.
     """
     typer.echo("Generating transcript from text summary. This may take a few minutes...")
-    sys_instrux = format_sys_instrux(
-        unformatted_sys_instrux, 
-        chosen_speaker_one_prefix,
-        chosen_speaker_two_prefix
-    )
     transcript = generate_text(text_summary, api_key, sys_instrux, text_model)
+    
+    if speaker_one_prefix and speaker_two_prefix:
+        transcript = add_speaker_labels_to_transcript(transcript, speaker_one_prefix, speaker_two_prefix)
+    
     transcript_output_path = Path(output_dir / f'transcript_{timestamp}.txt')
     write_text_to_file(transcript, transcript_output_path)
     typer.echo(f"Transcript written to {transcript_output_path}")
@@ -854,62 +859,6 @@ def execute_transcript_generation_workflow(
         True,
     )
     return transcript
-
-def format_sys_instrux(
-    unformatted_sys_instrux: str,
-    chosen_speaker_one_prefix: str,
-    chosen_speaker_two_prefix: str,
-) -> str:
-    """
-    Format sys instrux template,
-    using the chosen speaker prefixes
-    to replace the placeholders.
-    """
-    if validate_sys_instrux_format:   
-        sys_instrux = unformatted_sys_instrux.format(
-        speaker_1=chosen_speaker_one_prefix, 
-        speaker_2=chosen_speaker_two_prefix
-        )
-        return sys_instrux
-    else:
-        typer.echo(
-            "`speaker_1` and `speaker_2` fields not found in "
-            "`unformatted_sys_instrux` template. Exiting."
-        )
-        raise typer.Exit(1)
-
-def validate_sys_instrux_format(
-    unformatted_sys_instrux: str
-) -> bool:
-    """
-    Check that unformatted sys instrux
-    template contains the expected fields.
-
-    We can probably make this more elegant
-    if we find we're adding fields over time.
-    """
-    if (
-        '{speaker_1}' not in unformatted_sys_instrux
-        or '{speaker_2}' not in unformatted_sys_instrux
-    ):
-        return False
-    return True
-
-def transcript_validates(
-    transcript: str,
-    chosen_speaker_one_prefix: str,
-    chosen_speaker_two_prefix: str
-):
-    """
-    Make sure transcript has the expected
-    speaker labels
-    """
-    if (
-        not chosen_speaker_one_prefix in transcript
-        or not chosen_speaker_two_prefix in transcript
-    ):
-        return False
-    return True
 
 
 if __name__ == "__main__":

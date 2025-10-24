@@ -26,8 +26,7 @@ from main import (
     read_text_from_file,
     select_voices_google,
     SERVICE_NAME,
-    select_speaker_labels,
-    transcript_validates,
+    clean_and_validate_speaker_labels,
     USERNAME,
     validate_sys_instrux_format,
     VOICES_GOOGLE,
@@ -288,10 +287,10 @@ def test_select_voices(voice_one, voice_two, is_invalid):
 def test_select_speaker_labels(label_one, label_two, is_invalid):
     if is_invalid:
         with pytest.raises(typer.Exit) as exc_info:
-            speaker_label_one, speaker_label_two = select_speaker_labels(label_one, label_two)
+            speaker_label_one, speaker_label_two = clean_and_validate_speaker_labels(label_one, label_two)
             assert exc_info.value.exit_code == 1
     else:
-        speaker_label_one, speaker_label_two = select_speaker_labels(label_one, label_two)
+        speaker_label_one, speaker_label_two = clean_and_validate_speaker_labels(label_one, label_two)
         assert not ":" in [l[-1] for l in [speaker_label_one, speaker_label_two]] # no colon at end of strings
         assert speaker_label_one != speaker_label_two
         if not label_one and not label_two:
@@ -388,5 +387,3 @@ def test_execute_transcript_generation_workflow(output_dir, api_key):
         pytest.param("Nyla: hi\nJoannie: hello", "Abby", "Tiny", False, id='both-speaker-labels-missing'),
     ],
 )
-def test_transcript_validates(transcript, speaker1, speaker2, expected):
-    assert transcript_validates(transcript, speaker1, speaker2) == expected
