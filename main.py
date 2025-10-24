@@ -74,8 +74,7 @@ ELEVENLABS_KEY_USER_NAME = "elevenlabs_api_key"
     """)
 def add_elevenlabs_voice(
     voice_id: str,
-    custom_name: str,
-    user_id: str
+    custom_name: str
 ):
     ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
     client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
@@ -84,8 +83,8 @@ def add_elevenlabs_voice(
     voice_found = False
 
     # validate CLI params
-    if not voice_id or not custom_name or not user_id:
-        typer.echo(f"Voice ID, Custom Name, and User ID params must have valid values. Exiting.")
+    if not voice_id or not custom_name:
+        typer.echo(f"Voice ID and Custom Name params must have valid values. Exiting.")
         raise typer.Exit(code=1)
 
     # TODO: break out these chunks of logic/flow into separate functions?
@@ -107,6 +106,7 @@ def add_elevenlabs_voice(
         raise typer.Exit(code=1) 
 
     voice_found = False
+    owner_id = None
 
     # check for shared voice in community library
     typer.echo(f"Searching for voice in community library...")
@@ -116,6 +116,7 @@ def add_elevenlabs_voice(
             for voice in some_shared_voices.voices:
                 if voice.voice_id == voice_id:
                     voice_found = True
+                    owner_id = voice.public_owner_id
                     break
             if voice_found:
                 break
@@ -129,19 +130,11 @@ def add_elevenlabs_voice(
         raise typer.Exit(code=1)
 
     # add voice to user library
-    try:
-        client.voices.share(
-            public_user_id=user_id,
-            voice_id=voice_id,
-            new_name=custom_name
-        )
-    except Exception as e:
-        if 'public_user_not_found' or 'invalid_uid' in str(e):
-            typer.echo(f"User with ID {user_id} not found. Exiting.")
-            raise typer.Exit(code=1)
-        else:
-            # Handle all other unexpected errors
-            raise e
+    client.voices.share(
+        public_user_id=owner_id,
+        voice_id=voice_id,
+        new_name=custom_name
+    )
 
     typer.echo(f"Shared voice matching ID {voice_id} added to user library.")
     typer.echo(f"Script complete.")
@@ -749,7 +742,8 @@ def write_audio_data_to_wav_file(
 
 def combine_wav_files(
         input_files: List[Path], 
-        output_file: Path
+        output_file: Path,
+        silence_duration_sec: float = 0.4  # 0.4 seconds
 ):
     """
     Combines a list of WAV files into a single WAV file.
@@ -761,18 +755,29 @@ def combine_wav_files(
     params = first_file.getparams()
     first_file.close()
 
+    n_channels, sample_width, frame_rate = params[:3]
+
+    # Calculate silence frames and data
+    silence_frames = int(frame_rate * silence_duration_sec)
+    frame_size = n_channels * sample_width
+    silent_data = b'\x00' * (silence_frames * frame_size)
+
     # Create a new WAV file for writing
     output_wave = wave.open(str(output_file), 'wb')
     output_wave.setparams(params)
 
     # Loop through each input file, read its data, and write to the output
-    for file_path in input_files:
+    for ix, file_path in enumerate(input_files):
         with wave.open(str(file_path), 'rb') as input_wave:
             # Read all audio frames from the current file
             frames = input_wave.readframes(input_wave.getnframes())
 
             # Write the frames to the output file
             output_wave.writeframes(frames)
+
+        # Add silence after every file, except the last one
+        if ix < len(input_files) - 1:
+            output_wave.writeframes(silent_data)
 
     # Close the output file
     output_wave.close()
