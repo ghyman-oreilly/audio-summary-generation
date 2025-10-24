@@ -6,7 +6,7 @@ from pathlib import Path
 import random
 import time
 import typer
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 import wave
 
 from prompts import TEXT_SUMMARY_PROMPT, TRANSCRIPT_SYS_INSTRUCTIONS
@@ -48,7 +48,12 @@ VOICES_GOOGLE = [
     "Sulafat"
 ]
 
-DEFAULT_VOICE_ONE_ELEVENLABS = 'SAz9YHcvj6GT2YYXdXww' # River
+# https://elevenlabs.io/app/default-voices
+# I haven't been able to find a way to use
+# community voices. Possibly they need to be
+# added to our account, but I don't find evidence
+# in the docs that it can be done programmatically.
+DEFAULT_VOICE_ONE_ELEVENLABS = 'FGY2WhTYpPnrIDTdsKH5' # Laura
 DEFAULT_VOICE_TWO_ELEVENLABS = 'TX3LPaxmHKxFdv7VOQHJ' # Liam
 
 DEFAULT_SPEAKER_ONE_LABEL = 'Speaker 1'
@@ -58,6 +63,88 @@ DEFAULT_SPEAKER_TWO_LABEL = 'Speaker 2'
 SERVICE_NAME = "audio_summary_generator"
 GEMINI_KEY_USER_NAME = "google_api_key"
 ELEVENLABS_KEY_USER_NAME = "elevenlabs_api_key"
+
+@app.command(
+    help="""
+    Add a shared/community voice, by ID, to our
+    library of voices (ElevenLabs).
+
+    Only voices in our user library, which includes default
+    voices, can be used.
+    """)
+def add_elevenlabs_voice(
+    voice_id: str,
+    custom_name: str,
+    user_id: str
+):
+    ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
+    client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+    current_page = 0
+    continue_paging = True
+    voice_found = False
+
+    # validate CLI params
+    if not voice_id or not custom_name or not user_id:
+        typer.echo(f"Voice ID, Custom Name, and User ID params must have valid values. Exiting.")
+        raise typer.Exit(code=1)
+
+    # TODO: break out these chunks of logic/flow into separate functions?
+
+    # check if voice already exists in user library
+    try:
+        client.voices.get(voice_id=voice_id)
+        voice_found = True
+    except Exception as e:
+        if 'voice_not_found' in str(e):
+            # expected result
+            pass
+        else:
+            # Handle all other unexpected errors
+            raise e
+
+    if voice_found:
+        typer.echo(f"Shared voice already exists in user library. Exiting.")
+        raise typer.Exit(code=1) 
+
+    voice_found = False
+
+    # check for shared voice in community library
+    typer.echo(f"Searching for voice in community library...")
+    while continue_paging:
+        some_shared_voices = client.voices.get_shared(page_size=100, page=current_page)
+        if some_shared_voices.voices:
+            for voice in some_shared_voices.voices:
+                if voice.voice_id == voice_id:
+                    voice_found = True
+                    break
+            if voice_found:
+                break
+            if not some_shared_voices.has_more:
+                continue_paging = False
+        current_page += 1
+        time.sleep(0.5)
+
+    if not voice_found:
+        typer.echo(f"Shared voice matching ID {voice_id} not found. Exiting.")
+        raise typer.Exit(code=1)
+
+    # add voice to user library
+    try:
+        client.voices.share(
+            public_user_id=user_id,
+            voice_id=voice_id,
+            new_name=custom_name
+        )
+    except Exception as e:
+        if 'public_user_not_found' or 'invalid_uid' in str(e):
+            typer.echo(f"User with ID {user_id} not found. Exiting.")
+            raise typer.Exit(code=1)
+        else:
+            # Handle all other unexpected errors
+            raise e
+
+    typer.echo(f"Shared voice matching ID {voice_id} added to user library.")
+    typer.echo(f"Script complete.")
 
 @app.command(
     help="""
@@ -220,13 +307,13 @@ def generate_audio_summary(
     """
     GEMINI_API_KEY = check_api_key(SERVICE_NAME, GEMINI_KEY_USER_NAME)
     ELEVENLABS_API_KEY = None
-    elevenlabs_client = None
 
     if tts_provider == 'elevenlabs':
         ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
-        elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-        validate_voices_elevenlabs(elevenlabs_client, speaker_one_voice, speaker_two_voice)
+        tts_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+        validate_voices_elevenlabs(tts_client, speaker_one_voice, speaker_two_voice)
     else:
+        tts_client = genai.Client(api_key=GEMINI_API_KEY)
         speaker_one_voice, speaker_two_voice = select_voices_google(speaker_one_voice, speaker_two_voice)
 
         speaker_one_prefix, speaker_two_prefix = clean_and_validate_speaker_labels(
@@ -294,7 +381,8 @@ def generate_audio_summary(
         transcript_chunks, 
         TIMESTAMP, 
         output_dir,
-        GEMINI_API_KEY,
+        tts_provider=tts_provider,
+        tts_client=tts_client,
         speaker_one_voice=speaker_one_voice,
         speaker_two_voice=speaker_two_voice,
         chosen_speaker_one_prefix=speaker_one_prefix,
@@ -536,46 +624,71 @@ def chunk_string(
 
 
 def generate_audio_chunks(
-    text_chunks: List[str],
+    chunks: Union[List[str], List[List[dict]]],
     timestamp: int,
     output_dir: Path,
-    api_key: str,
-    model_name: str = 'gemini-2.5-flash-preview-tts',
-    speaker_one_voice: str = 'Puck',
-    speaker_two_voice: str = 'Zephyr',
-    chosen_speaker_one_prefix: str = "Speaker 1",
-    chosen_speaker_two_prefix: str = "Speaker 2"  
+    tts_provider: Literal['google', 'elevenlabs'],
+    tts_client: Union[genai.Client, ElevenLabs],
+    speaker_one_voice: str,
+    speaker_two_voice: str,
+    chosen_speaker_one_prefix: Optional[str] = None,
+    chosen_speaker_two_prefix: Optional[str] = None
 ):
     """
-    Given a list of text chunks, generate
+    Given a list of text chunks or Text to Dialog payloads, generate
     and save audio chunks to file, returning
     list of audio chunk filepaths.
     """
     audio_chunk_filepaths = []
 
-    for i, text_chunk in enumerate(text_chunks):
-        typer.echo(f"Generating audio chunk {i+1} of {len(text_chunks)}...")
+    for i, chunk in enumerate(chunks):
+        typer.echo(f"Generating audio chunk {i+1} of {len(chunks)}...")
         audio_chunk_filepath = Path(output_dir / f"audio_chunk_{i:03d}_{timestamp}.wav")
-        generate_audio_chunk_from_text_chunk(
-            text_chunk, 
-            audio_chunk_filepath, 
-            api_key=api_key, 
-            model_name=model_name,
-            speaker_one_voice=speaker_one_voice,
-            speaker_two_voice=speaker_two_voice,
-            chosen_speaker_one_prefix=chosen_speaker_one_prefix,
-            chosen_speaker_two_prefix=chosen_speaker_two_prefix
-        )
+        if tts_provider == 'elevenlabs':
+            generate_audio_chunk_from_chunk_elevenlabs(
+                chunk, 
+                audio_chunk_filepath,
+                tts_client=tts_client
+            )
+        else:
+            generate_audio_chunk_from_text_chunk_google(
+                chunk, 
+                audio_chunk_filepath, 
+                tts_client=tts_client, 
+                speaker_one_voice=speaker_one_voice,
+                speaker_two_voice=speaker_two_voice,
+                chosen_speaker_one_prefix=chosen_speaker_one_prefix,
+                chosen_speaker_two_prefix=chosen_speaker_two_prefix
+            )
         audio_chunk_filepaths.append(audio_chunk_filepath)
         typer.echo(f"Audio chunk saved to {str(audio_chunk_filepath)}...")
     
     return audio_chunk_filepaths
 
 
-def generate_audio_chunk_from_text_chunk(
+def generate_audio_chunk_from_chunk_elevenlabs(
+    payload: list[dict],
+    output_file: Path,
+    tts_client: ElevenLabs,
+    model_id: str = 'eleven_v3'
+):
+    """
+    Given a payload, generate audio using ElevenLabs
+    Text to Dialog API
+    """
+    audio_generator = tts_client.text_to_dialogue.convert(
+        model_id=model_id,
+        inputs=payload,
+        output_format='pcm_24000' # important to use this encoding
+                                  # for compatibility with write_audio_data_to_wav_file
+    )
+    audio_bytes = b"".join(list(audio_generator))
+    write_audio_data_to_wav_file(output_file, audio_bytes)
+
+def generate_audio_chunk_from_text_chunk_google(
     text: str,
     output_file: Path,
-    api_key: str,
+    tts_client: genai.Client, # Google TTS client
     model_name: str = 'gemini-2.5-flash-preview-tts',
     speaker_one_voice: str = 'Puck',
     speaker_two_voice: str = 'Zephyr',
@@ -583,11 +696,9 @@ def generate_audio_chunk_from_text_chunk(
     chosen_speaker_two_prefix: str = "Speaker 2"
 ):
     """
-    Given a text prompt, generate audio
+    Given a text prompt, generate audio using Google TTS
     """
-    client = genai.Client(api_key=api_key)
-
-    response = client.models.generate_content(
+    response = tts_client.models.generate_content(
     model=model_name,
     contents=text,
     config=types.GenerateContentConfig(
@@ -723,24 +834,24 @@ def validate_voices_elevenlabs(
     """
     Validate user/default selections against
     list retrieved from ElevenLabs API
+
+    Note that we won't be able to use community voices
+    until they've been added to our account.
     """
-    is_invalid = False
-    
-    voice_one_result = client.voices.search(
-        voice_ids=[speaker_one_voice]
-    ).voices
+    voice_one_invalid = False
+    voice_two_invalid = False
 
-    voice_two_result = client.voices.search(
-        voice_ids=[speaker_two_voice]
-    ).voices
-
-    if len(voice_one_result) != 1:
+    try:
+        voice_one_result = client.voices.get(voice_id=speaker_one_voice)
+    except:
         typer.echo(f"Voice selection one ({speaker_one_voice}) is invalid.")
-        is_invalid = True
-    if len(voice_two_result) != 1:
+        voice_one_invalid = True
+    try:
+        voice_two_result = client.voices.get(voice_id=speaker_two_voice)
+    except:
         typer.echo(f"Voice selection two ({speaker_two_voice}) is invalid.")
-        is_invalid = True
-    if is_invalid:
+        voice_two_invalid = True
+    if voice_one_invalid or voice_two_invalid:
         typer.echo("Please rerun the script with valid voice selections.")
         raise typer.Exit(1)
 
