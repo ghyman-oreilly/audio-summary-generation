@@ -53,8 +53,8 @@ VOICES_GOOGLE = [
 # community voices. Possibly they need to be
 # added to our account, but I don't find evidence
 # in the docs that it can be done programmatically.
-DEFAULT_VOICE_ONE_ELEVENLABS = 'FGY2WhTYpPnrIDTdsKH5' # Laura
-DEFAULT_VOICE_TWO_ELEVENLABS = 'TX3LPaxmHKxFdv7VOQHJ' # Liam
+DEFAULT_VOICE_ONE_ELEVENLABS = 'SAz9YHcvj6GT2YYXdXww' # River
+DEFAULT_VOICE_TWO_ELEVENLABS = 'bIHbv24MWmeRgasZH58o' # Will
 
 DEFAULT_SPEAKER_ONE_LABEL = 'Speaker 1'
 DEFAULT_SPEAKER_TWO_LABEL = 'Speaker 2'
