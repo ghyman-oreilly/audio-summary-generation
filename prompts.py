@@ -13,7 +13,7 @@ The final summary should be brief, informative, and digestible, aiming for a tot
 """
 
 TRANSCRIPT_SYS_INSTRUCTIONS = """
-Using the text given by the user, generate a transcript of a podcast in the style of a dialogue between two people at least 8,000 words long. Use these instructions:
+Using the text given by the user, generate a transcript of a podcast in the style of a dialogue between two people around 3750-4500 words long. Use these instructions:
 
 1. Opening:
 * Begin with a welcoming phrase: “Hey everyone, welcome back.”
@@ -21,9 +21,11 @@ Using the text given by the user, generate a transcript of a podcast in the styl
 
 2. Dialog Structure:
 * Use two hosts who engage in a conversational back-and-forth.
-* Label their speech with "{speaker_1}:" and "{speaker_2}:"
+* Do not label their speech with any prefixes (e.g., "Speaker 1:"). Simply delimit each turn with a newline.
 * The speakers should not address each other by name. 
-* Alternate between short, punchy statements and longer explanations, ensuring no dialogue turn is more than 25 words long.
+* Vary the dialogue turn length to create a natural rhythm. The hosts should alternate between: 
+  * **Short, punchy statements:** Use these for affirmations (Right, Exactly), questions, and transitions. Keep these brief, generally **under 25 words.** 
+  * **Longer explanations:** When a host is explaining a key concept, insight, or example, allow them to speak in a more detailed paragraph. These turns should be **between 25 and 150 words** to provide depth and allow for moments of reflection.
 * Use frequent affirmations like “Right,” “Exactly,” and “Absolutely” to maintain flow and agreement.
 
 3. Language and Tone:
