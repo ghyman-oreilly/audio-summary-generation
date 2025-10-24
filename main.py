@@ -279,7 +279,10 @@ def generate_audio_summary(
 
     # chunk transcript
     typer.echo("Chunking transcript. This may take a few minutes...")
-    transcript_chunks = chunk_string(transcript, GEMINI_API_KEY, TTS_MODEL_GOOGLE)
+    if tts_provider == 'elevenlabs':
+        transcript_chunks = generate_text_to_dialogue_payloads(transcript, speaker_one_voice, speaker_two_voice)
+    else:
+        transcript_chunks = chunk_string(transcript, GEMINI_API_KEY, TTS_MODEL_GOOGLE)
     typer.echo(f"Transcript split into {len(transcript_chunks)} chunks.")
 
     # generate audio from chunks
@@ -440,6 +443,50 @@ def read_text_from_file(
     return text
 
 
+def generate_text_to_dialogue_payloads(
+    transcript: str,
+    voice_one_id: str,
+    voice_two_id: str,
+    char_limit: int = 3000
+):
+    """
+    Split a transcript string into payloads
+    for the ElevenLabs Text to Dialog API, remaining
+    under a given character limit.
+
+    Character limit for ElevenLabs v3 model
+    (required for use with Text to Dialog API) 
+    is 3000 characters.
+    """
+    payloads = []
+    snippets = [line for line in transcript.splitlines() if line]
+    text_char_count = 0
+    payload = []
+    for ix, snippet in enumerate(snippets):
+        text_char_count = text_char_count + len(snippet)
+
+        if text_char_count >= char_limit:
+            text_char_count = 0
+            if payload:
+                payloads.append(payload)
+                payload = []
+
+        if ix == 0 or ix % 2 == 0:
+            voice_id_to_use = voice_one_id
+        else:
+            voice_id_to_use = voice_two_id
+
+        input = { 'text': snippet, 'voice_id': voice_id_to_use }
+
+        payload.append(input)
+    
+    if payload:
+        payloads.append(payload)
+    
+    return payloads
+        
+
+
 def chunk_string(
     text_string: str,
     api_key: str,
@@ -449,6 +496,8 @@ def chunk_string(
     """
     Generate a list of strings from a single string,
     keeping within a specified token limit.
+
+    For use with Google TTS.
     """
     client = genai.Client(api_key=api_key)
     
