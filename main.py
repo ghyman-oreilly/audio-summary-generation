@@ -313,8 +313,8 @@ def generate_audio_summary(
             speaker_one_prefix, speaker_two_prefix
         )
 
-    TEXT_MODEL = 'gemini-2.5-flash'
-    TTS_MODEL_GOOGLE = 'gemini-2.5-flash-preview-tts'
+    TEXT_MODEL = 'gemini-2.5-pro'
+    TTS_MODEL_GOOGLE = 'gemini-2.5-pro-preview-tts'
 
     TIMESTAMP = int(time.time())
     
@@ -360,7 +360,11 @@ def generate_audio_summary(
     # chunk transcript
     typer.echo("Chunking transcript. This may take a few minutes...")
     if tts_provider == 'elevenlabs':
-        transcript_chunks = generate_text_to_dialogue_payloads(transcript, speaker_one_voice, speaker_two_voice)
+        transcript_chunks = generate_text_to_dialogue_payloads(
+            transcript, 
+            speaker_one_voice, 
+            speaker_two_voice
+        )
     else:
         transcript_chunks = chunk_string(transcript)
     typer.echo(f"Transcript split into {len(transcript_chunks)} chunks.")
@@ -376,6 +380,7 @@ def generate_audio_summary(
         output_dir,
         tts_provider=tts_provider,
         tts_client=tts_client,
+        tts_model_google=TTS_MODEL_GOOGLE,
         speaker_one_voice=speaker_one_voice,
         speaker_two_voice=speaker_two_voice,
         chosen_speaker_one_prefix=speaker_one_prefix,
@@ -495,7 +500,7 @@ def generate_text(
         )
     else:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=model_name,
             contents=user_prompt
         )
     
@@ -599,6 +604,7 @@ def generate_audio_chunks(
     output_dir: Path,
     tts_provider: Literal['google', 'elevenlabs'],
     tts_client: Union[genai.Client, ElevenLabs],
+    tts_model_google: str,
     speaker_one_voice: str,
     speaker_two_voice: str,
     chosen_speaker_one_prefix: Optional[str] = None,
@@ -625,6 +631,7 @@ def generate_audio_chunks(
                 chunk, 
                 audio_chunk_filepath, 
                 tts_client=tts_client, 
+                model_name=tts_model_google,
                 speaker_one_voice=speaker_one_voice,
                 speaker_two_voice=speaker_two_voice,
                 chosen_speaker_one_prefix=chosen_speaker_one_prefix,
