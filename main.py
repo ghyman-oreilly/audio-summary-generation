@@ -49,10 +49,9 @@ VOICES_GOOGLE = [
 ]
 
 # https://elevenlabs.io/app/default-voices
-# I haven't been able to find a way to use
-# community voices. Possibly they need to be
-# added to our account, but I don't find evidence
-# in the docs that it can be done programmatically.
+# users can indicate other voices they want to use,
+# but nondefault voices must be added to the account 
+# collection first
 DEFAULT_VOICE_ONE_ELEVENLABS = 'SAz9YHcvj6GT2YYXdXww' # River
 DEFAULT_VOICE_TWO_ELEVENLABS = 'bIHbv24MWmeRgasZH58o' # Will
 
