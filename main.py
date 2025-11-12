@@ -1,4 +1,5 @@
-from elevenlabs import ElevenLabs
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from elevenlabs import ElevenLabs, ModelSettingsResponseModel
 from google import genai
 from google.genai import types
 import keyring
@@ -62,6 +63,45 @@ DEFAULT_SPEAKER_TWO_LABEL = 'Speaker 2'
 SERVICE_NAME = "audio_summary_generator"
 GEMINI_KEY_USER_NAME = "google_api_key"
 ELEVENLABS_KEY_USER_NAME = "elevenlabs_api_key"
+
+@app.command(
+    help="""
+    Combine audio chunk files from previous
+    session(s) into a single audio file. 
+    """
+)
+def combine_audio_files(
+    input_files: List[Path],
+    output_dir: Optional[Path] = typer.Option(
+    None, help=(
+            "Provide directory where combine output audio file should be saved. "
+            "Defaults to current working directory."
+        )
+    ),
+):
+    TIMESTAMP = int(time.time())
+    
+    # validate input files
+    if not input_files or len(input_files) < 2:
+        typer.echo("Two or more input files are required. Exiting...")
+        raise typer.Exit(code=1) 
+    
+    for input_file in input_files:
+        if not file_is_valid(input_file, '.wav', 20):
+            typer.echo(f"Input file {input_file} isn't valid. Exiting...")
+            raise typer.Exit(code=1) 
+    
+    # check/config output directory
+    if output_dir:
+        if not dir_is_valid(output_dir):
+            typer.echo("Output directory isn't valid. Exiting...")
+            raise typer.Exit(code=1)
+    else:
+        output_dir = Path.cwd()
+
+    combined_audio_filepath = Path(output_dir / f"combined_audio_{TIMESTAMP}.wav")
+    combine_wav_files(input_files, combined_audio_filepath)
+    typer.echo(f"Combined audio saved to {str(combined_audio_filepath)}")
 
 @app.command(
     help="""
@@ -320,7 +360,7 @@ def generate_audio_summary(
     # check/config output directory
     if output_dir:
         if not dir_is_valid(output_dir):
-            typer.echo("Exiting...")
+            typer.echo("Output directory isn't valid. Exiting...")
             raise typer.Exit(code=1)
     else:
         output_dir = Path.cwd()
@@ -452,7 +492,7 @@ def infer_with_pdf_document_understanding(
         path_to_pdf: Path,
         prompt: str,
         api_key: str,
-        model_name: str = 'gemini-2.5-flash'
+        model_name: str = 'gemini-2.5-pro'
 ) -> str:
     """
     Given a PDF file as corpus, generate a response to a user prompt
@@ -477,7 +517,7 @@ def generate_text(
         user_prompt: str,
         api_key: str,
         sys_instrux: Optional[str] = None,
-        model_name: str = 'gemini-2.5-flash'
+        model_name: str = 'gemini-2.5-pro'
 ) -> str:
     """
     Generate text, given a user prompt
@@ -532,7 +572,7 @@ def generate_text_to_dialogue_payloads(
     transcript: str,
     voice_one_id: str,
     voice_two_id: str,
-    char_limit: int = 3000
+    char_limit: int = 3000 # safe upper threshold accepted by APIs is probably ~3000 
 ):
     """
     Assign voice IDs to unlabeled transcript chunks
@@ -607,7 +647,8 @@ def generate_audio_chunks(
     speaker_one_voice: str,
     speaker_two_voice: str,
     chosen_speaker_one_prefix: Optional[str] = None,
-    chosen_speaker_two_prefix: Optional[str] = None
+    chosen_speaker_two_prefix: Optional[str] = None,
+    timeout: float = (60.0 * 10) # 10 minutes per chunk/call
 ):
     """
     Given a list of text chunks or Text to Dialog payloads, generate
@@ -619,25 +660,38 @@ def generate_audio_chunks(
     for i, chunk in enumerate(chunks):
         typer.echo(f"Generating audio chunk {i+1} of {len(chunks)}...")
         audio_chunk_filepath = Path(output_dir / f"audio_chunk_{i:03d}_{timestamp}.wav")
-        if tts_provider == 'elevenlabs':
-            generate_audio_chunk_from_chunk_elevenlabs(
-                chunk, 
-                audio_chunk_filepath,
-                tts_client=tts_client
-            )
-        else:
-            generate_audio_chunk_from_text_chunk_google(
-                chunk, 
-                audio_chunk_filepath, 
-                tts_client=tts_client, 
-                model_name=tts_model_google,
-                speaker_one_voice=speaker_one_voice,
-                speaker_two_voice=speaker_two_voice,
-                chosen_speaker_one_prefix=chosen_speaker_one_prefix,
-                chosen_speaker_two_prefix=chosen_speaker_two_prefix
-            )
-        audio_chunk_filepaths.append(audio_chunk_filepath)
-        typer.echo(f"Audio chunk saved to {str(audio_chunk_filepath)}...")
+        
+        # use ThreadPoolExecutor to allow for custom timeout on execution of API calls
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            try:
+                if tts_provider == 'elevenlabs':
+                    future = executor.submit(
+                        generate_audio_chunk_from_chunk_elevenlabs,
+                        payload=chunk, 
+                        output_file=audio_chunk_filepath,
+                        tts_client=tts_client
+                    )
+                else:
+                    future = executor.submit(
+                        generate_audio_chunk_from_text_chunk_google,
+                        text=chunk, 
+                        output_file=audio_chunk_filepath, 
+                        tts_client=tts_client, 
+                        model_name=tts_model_google,
+                        speaker_one_voice=speaker_one_voice,
+                        speaker_two_voice=speaker_two_voice,
+                        chosen_speaker_one_prefix=chosen_speaker_one_prefix,
+                        chosen_speaker_two_prefix=chosen_speaker_two_prefix
+                        
+                    )
+                # wait for the executor result, enforcing timeout
+                future.result(timeout=timeout)
+
+                audio_chunk_filepaths.append(audio_chunk_filepath)
+                typer.echo(f"Audio chunk saved to {str(audio_chunk_filepath)}...")
+            except TimeoutError:
+                print(f"API call exceeded timeout of {timeout / 60} minutes. Exiting.")
+                raise typer.Exit(code=1)
     
     return audio_chunk_filepaths
 
@@ -646,7 +700,10 @@ def generate_audio_chunk_from_chunk_elevenlabs(
     payload: list[dict],
     output_file: Path,
     tts_client: ElevenLabs,
-    model_id: str = 'eleven_v3'
+    model_id: str = 'eleven_v3', # only model available for multispeaker TTS
+    stability: Literal['0.0', '0.5', '1.0'] = '0.5' # API default is 0.5 (float); 
+                                                    # only three options available with
+                                                    # eleven_v3 model
 ):
     """
     Given a payload, generate audio using ElevenLabs
@@ -655,6 +712,7 @@ def generate_audio_chunk_from_chunk_elevenlabs(
     audio_generator = tts_client.text_to_dialogue.convert(
         model_id=model_id,
         inputs=payload,
+        settings=ModelSettingsResponseModel(stability=float(stability)),
         output_format='pcm_24000' # important to use this encoding
                                   # for compatibility with write_audio_data_to_wav_file
     )
@@ -665,43 +723,49 @@ def generate_audio_chunk_from_text_chunk_google(
     text: str,
     output_file: Path,
     tts_client: genai.Client, # Google TTS client
-    model_name: str = 'gemini-2.5-flash-preview-tts',
+    model_name: str = 'gemini-2.5-pro-preview-tts',
     speaker_one_voice: str = 'Puck',
     speaker_two_voice: str = 'Zephyr',
     chosen_speaker_one_prefix: str = "Speaker 1",
-    chosen_speaker_two_prefix: str = "Speaker 2"
+    chosen_speaker_two_prefix: str = "Speaker 2",
+    temperature: float = 1.0, # avail range and default varies by model
 ):
     """
     Given a text prompt, generate audio using Google TTS
+
+    Note: as of 11/12, adjusting the temperature below
+    0.7 with gemini-2.5-pro-preview-tts resulted in audio
+    dropping out (0.6) or failure of API to respond at all (0.5).
     """
     response = tts_client.models.generate_content(
-    model=model_name,
-    contents=text,
-    config=types.GenerateContentConfig(
-        response_modalities=["AUDIO"],
-        speech_config=types.SpeechConfig(
-            multi_speaker_voice_config=types.MultiSpeakerVoiceConfig(
-                speaker_voice_configs=[
-                types.SpeakerVoiceConfig(
-                    speaker=chosen_speaker_one_prefix,
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name=speaker_one_voice,
+        model=model_name,
+        contents=text,
+        config=types.GenerateContentConfig(
+            temperature=temperature,
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                multi_speaker_voice_config=types.MultiSpeakerVoiceConfig(
+                    speaker_voice_configs=[
+                    types.SpeakerVoiceConfig(
+                        speaker=chosen_speaker_one_prefix,
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                voice_name=speaker_one_voice,
+                            )
                         )
-                    )
-                ),
-                types.SpeakerVoiceConfig(
-                    speaker=chosen_speaker_two_prefix,
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name=speaker_two_voice,
+                    ),
+                    types.SpeakerVoiceConfig(
+                        speaker=chosen_speaker_two_prefix,
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                voice_name=speaker_two_voice,
+                            )
                         )
-                    )
-                ),
-                ]
+                    ),
+                    ]
+                )
             )
         )
-    )
     )
 
     data = response.candidates[0].content.parts[0].inline_data.data
@@ -930,7 +994,7 @@ def execute_pdf_workflow(
     when PDF is passed in for summarization.
     """
     if not file_is_valid(path_to_pdf, '.pdf', 20):
-        typer.echo("Exiting...")
+        typer.echo("Input file isn't valid. Exiting...")
         raise typer.Exit(code=1)        
     typer.echo("Generating text summary from PDF. This may take a few minutes...")	    
     text_summary = infer_with_pdf_document_understanding(path_to_pdf, TEXT_SUMMARY_PROMPT, api_key, text_model)
