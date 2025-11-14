@@ -25,7 +25,7 @@ def write_backup_to_json_file(
     audio from segments of the transcript.
     """
     with open(str(output_filepath), "w") as f:
-        json.dump([i.model_dump(mode="json") for i in input_data], f)
+        json.dump(input_data, f)
 
 def check_tokenizer_data_availability():
     """
@@ -34,7 +34,7 @@ def check_tokenizer_data_availability():
     """
     try:
         nltk.data.find('tokenizers/punkt')
-    except nltk.downloader.DownloadError:
+    except LookupError:
         typer.echo(
             (
                 "Downloading NLTK 'punkt' tokenizer data. "
@@ -260,6 +260,8 @@ def generate(
         else:
             output_dir = Path.cwd()
 
+        backup_filepath = Path(output_dir / f"backup_{TIMESTAMP}.json")
+
         # generate text summary
         if (
             path_to_pdf 
@@ -314,9 +316,9 @@ def generate(
                 else:
                     voice_id = speaker_two_voice
                 for text_string in transcript_chunk: 
-                    generation_data.append({'voice_id': voice_id, 'text': text_string, 'filepath': output_filepath})
+                    generation_data.append({'voice_id': voice_id, 'text': text_string, 'filepath': str(output_filepath)})
                     audio_chunk_filepaths.append(output_filepath)
-            write_backup_to_json_file(generation_data)
+            write_backup_to_json_file(generation_data, backup_filepath)
         else:
             # TODO: read and validate saved generation plan
             pass
@@ -329,7 +331,7 @@ def generate(
         for ix, generation_datum in enumerate(generation_data):
             text_string = generation_datum["text"]
             voice_id = generation_datum["voice_id"]
-            output_filepath = Path(generation_datum["output_filepath"])
+            output_filepath = Path(generation_datum["filepath"])
             typer.echo(f"Generating audio chunk {ix} of {len(generation_data)}...")
             generate_audio_with_timeout(
                 text=text_string,
@@ -611,11 +613,13 @@ def generate_audio_chunk_from_chunk(
     Given a text string, generate audio using ElevenLabs
     Text to Speech API
     """
+    # TODO: check previous_request_ids, next_request_ids params of convert!
+    
     audio_generator = tts_client.text_to_speech.convert(
         model_id=model_id,
         text=text,
         voice_id=voice_id,
-        settings=VoiceSettings(
+        voice_settings=VoiceSettings(
             stability=0.5,
             similarity_boost=0.75,
             style=0.0,
