@@ -316,7 +316,13 @@ def generate(
                 else:
                     voice_id = speaker_two_voice
                 for text_string in transcript_chunk: 
-                    generation_data.append({'voice_id': voice_id, 'text': text_string, 'filepath': str(output_filepath)})
+                    generation_data.append(
+                        {
+                            'voice_id': voice_id, 
+                            'text': text_string, 
+                            'filepath': str(output_filepath)
+                        }
+                    )
                     audio_chunk_filepaths.append(output_filepath)
             write_backup_to_json_file(generation_data, backup_filepath)
         else:
