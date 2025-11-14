@@ -307,6 +307,7 @@ def generate(
             typer.echo(f"Transcript split into {len(transcript_chunks)} chunks.")
 
             # create generation plan
+            # TODO: abstract
             generation_data = []
             audio_chunk_filepaths = []
             for ix, transcript_chunk in enumerate(transcript_chunks):
@@ -324,35 +325,43 @@ def generate(
                         }
                     )
                     audio_chunk_filepaths.append(output_filepath)
+            
+            # generate audio
+            # iterate over generation data
+            typer.echo(
+                "Generating audio from transcript chunks. "
+                "This could take a while (up to 10 minutes per chunk)..."
+            )
+            # TODO: abstract
+            for ix, generation_datum in enumerate(generation_data):
+                text_string = generation_datum["text"]
+                voice_id = generation_datum["voice_id"]
+                output_filepath = Path(generation_datum["filepath"])
+                typer.echo(f"Generating audio chunk {ix} of {len(generation_data)}...")
+                generate_audio_with_timeout(
+                    text=text_string,
+                    voice_id=voice_id,
+                    output_file=output_filepath,
+                    tts_client=tts_client,
+                    model_id=TTS_MODEL
+                )
             write_backup_to_json_file(generation_data, backup_filepath)
         else:
             # TODO: read and validate saved generation plan
+            # TODO: allow user to select segments to regen
+            # TODO: regen segments
             pass
-
-        # TODO: iterate over generation data
-        typer.echo(
-            "Generating audio from transcript chunks. "
-            "This could take a while (up to 10 minutes per chunk)..."
-        )
-        for ix, generation_datum in enumerate(generation_data):
-            text_string = generation_datum["text"]
-            voice_id = generation_datum["voice_id"]
-            output_filepath = Path(generation_datum["filepath"])
-            typer.echo(f"Generating audio chunk {ix} of {len(generation_data)}...")
-            generate_audio_with_timeout(
-                text=text_string,
-                voice_id=voice_id,
-                output_file=output_filepath,
-                tts_client=tts_client,
-                model_id=TTS_MODEL
-            )
       
+        # TODO: if user has regenned some segments, we'll want to give them the OPTION to 
+        # combine all (from backup file) and overwrite combined audio file
+
         # combine chunk audio files
         typer.echo("Combining audio chunk files...")
         combined_audio_filepath = Path(output_dir / f"combined_audio_{TIMESTAMP}.wav")
         combine_wav_files(audio_chunk_filepaths, combined_audio_filepath)
         typer.echo(f"Combined audio saved to {str(combined_audio_filepath)}")
 
+        # TODO: Consider: maybe we want to make it harder to delete (i.e., Y is don't delete)
         delete_audio_chunks = typer.confirm(
             "Do you wish to delete the partial audio chunks?\n"
             "Choose No if you wish to save them in case they need to be respliced later."
