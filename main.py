@@ -1,8 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
-from elevenlabs import ElevenLabs, ModelSettingsResponseModel
+from elevenlabs import ElevenLabs, VoiceSettings
 from google import genai
 from google.genai import types
+import json
 import keyring
+import nltk
 from pathlib import Path
 import random
 import time
@@ -13,41 +15,37 @@ import wave
 from prompts import TEXT_SUMMARY_PROMPT, TRANSCRIPT_SYS_INSTRUCTIONS
 
 
+def write_backup_to_json_file(
+    input_data: list[dict], output_filepath: Union[str, Path]
+):
+    """
+    Save backup data to JSON file.
+
+    These backups allow the user to more easily regenerate
+    audio from segments of the transcript.
+    """
+    with open(str(output_filepath), "w") as f:
+        json.dump([i.model_dump(mode="json") for i in input_data], f)
+
+def check_tokenizer_data_availability():
+    """
+    Check for availability of sentence tokenizer
+    data. Download if not available.
+    """
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except nltk.downloader.DownloadError:
+        typer.echo(
+            (
+                "Downloading NLTK 'punkt' tokenizer data. "
+                "This is a one-time process requiring internet access."
+            )
+        )
+        nltk.download('punkt')
+
 app = typer.Typer()
 
-# https://ai.google.dev/gemini-api/docs/speech-generation
-VOICES_GOOGLE = [
-    "Zephyr",
-    "Puck",
-    "Charon",
-    "Kore",
-    "Fenrir",
-    "Leda",
-    "Orus",
-    "Aoede",
-    "Callirrhoe",
-    "Autonoe",
-    "Enceladus",
-    "Iapetus",
-    "Umbriel",
-    "Algieba",
-    "Despina",
-    "Erinome",
-    "Algenib",
-    "Rasalgethi",
-    "Laomedeia",
-    "Achernar",
-    "Alnilam",
-    "Schedar",
-    "Gacrux",
-    "Pulcherrima",
-    "Achird",
-    "Zubenelgenubi",
-    "Vindemiatrix",
-    "Sadachbia",
-    "Sadaltager",
-    "Sulafat"
-]
+check_tokenizer_data_availability()
 
 # https://elevenlabs.io/app/default-voices
 # users can indicate other voices they want to use,
@@ -55,9 +53,6 @@ VOICES_GOOGLE = [
 # collection first
 DEFAULT_VOICE_ONE_ELEVENLABS = 'SAz9YHcvj6GT2YYXdXww' # River
 DEFAULT_VOICE_TWO_ELEVENLABS = 'bIHbv24MWmeRgasZH58o' # Will
-
-DEFAULT_SPEAKER_ONE_LABEL = 'Speaker 1'
-DEFAULT_SPEAKER_TWO_LABEL = 'Speaker 2'
 
 # keychain deets
 SERVICE_NAME = "audio_summary_generator"
@@ -208,9 +203,14 @@ def generate(
                 "Provide path to text file containing the transcript for your audio. "
                 "If providing this text file, the PDF path argument and text_summary_file options "
                 "don't need to be provided."
-                "Important: make sure your speakers are prefixed with "
-                "'Speaker 1:' and 'Speaker 2:' prefixes, unless you're setting "
-                "custom prefixes with the `--speaker-one-prefix` and `--speaker-two-prefix` flags."
+            )
+        ),
+        backup_file_for_regen: Optional[Path] = typer.Option(
+            None, help=(
+                "Provide path to JSON file containing backup data. "
+                "This will provide an opportunity to regenerate previously generated segments. "
+                "If providing this text file, the PDF path argument and text_summary_file options "
+                "don't need to be provided."
             )
         ),
         speaker_one_voice: Optional[str] = typer.Option(
@@ -229,218 +229,131 @@ def generate(
             )
         ),
 ):
-    generate_audio_summary(
-        path_to_pdf,
-        output_dir,
-        'elevenlabs',
-        text_summary_file,
-        transcript_file,
-        speaker_one_voice,
-        speaker_two_voice,
-    )
-
-@app.command(
-    help="""
-    Generate podcast-style audio summary using an alternative
-    TTS service provider (Google). 
-    """
-)
-def generate_w_google(
-        path_to_pdf: Optional[Path] = typer.Argument(
-            None, help=(
-                "Provide path to a PDF file to run the full audio-summary generation workflow. "
-                "PDF must be less than 20MB."
-            )
-        ),
-        output_dir: Optional[Path] = typer.Option(
-            None, help=(
-                "Provide directory where output files (text, audio) should be saved. "
-                "Defaults to current working directory."
-            )
-        ),
-        text_summary_file: Optional[Path] = typer.Option(
-            None, help=(
-                "Provide path to text file containing the summary of your PDF. "
-                "If providing this text file, the PDF path argument doesn't need to be provided."
-            )
-        ),
-        transcript_file: Optional[Path] = typer.Option(
-            None, help=(
-                "Provide path to text file containing the transcript for your audio. "
-                "If providing this text file, the PDF path argument and text_summary_file options "
-                "don't need to be provided."
-                "Important: make sure your speakers are prefixed with "
-                "'Speaker 1:' and 'Speaker 2:' prefixes, unless you're setting "
-                "custom prefixes with the `--speaker-one-prefix` and `--speaker-two-prefix` flags."
-            )
-        ),
-        speaker_one_voice: Optional[str] = typer.Option(
-            None,
-            help=(
-                f"Choose a voice for speaker one. "
-                f"Available options are: {', '.join(VOICES_GOOGLE)} "
-                f"Default: random."
-            )
-        ),
-        speaker_two_voice: Optional[str] = typer.Option(
-            None,
-            help=(
-                f"Choose a voice for speaker one. "
-                f"Available options are: {', '.join(VOICES_GOOGLE)} "
-                f"Be sure to select a different voice from you chose for speaker one! "
-                f"Default: random."
-            )
-        ),
-        speaker_one_prefix: Optional[str] = typer.Option(
-            None,
-            help=(
-                f"Choose a prefix/lavel for speaker one. "
-                f"Default: {DEFAULT_SPEAKER_ONE_LABEL}. "
-                f"Note: If running the script withe the `--transcript_file` flag, "
-                "this should match whatever you have in your transcript."
-            )
-        ),
-        speaker_two_prefix: Optional[str] = typer.Option(
-            None,
-            help=(
-                f"Choose a prefix/lavel for speaker two. "
-                f"Default: {DEFAULT_SPEAKER_TWO_LABEL}. "
-                f"Note: If running the script withe the `--transcript_file` flag, "
-                "this should match whatever you have in your transcript."
-            )
-        ),
-):
-    generate_audio_summary(
-        path_to_pdf,
-        output_dir,
-        'google',
-        text_summary_file,
-        transcript_file,
-        speaker_one_voice,
-        speaker_two_voice,
-        speaker_one_prefix,
-        speaker_two_prefix
-    )
-
-def generate_audio_summary(
-    path_to_pdf: Optional[Path],
-    output_dir: Optional[Path],
-    tts_provider: Literal['google', 'elevenlabs'],
-    text_summary_file: Optional[Path] = None,
-    transcript_file: Optional[Path] = None,
-    speaker_one_voice: Optional[str] = None,
-    speaker_two_voice: Optional[str] = None,
-    speaker_one_prefix: Optional[str] = None,
-    speaker_two_prefix: Optional[str] = None
-):
-    """
-    Generate podcast-style audio summary
-    from a text PDF.
-    """
-    GEMINI_API_KEY = check_api_key(SERVICE_NAME, GEMINI_KEY_USER_NAME)
-    ELEVENLABS_API_KEY = None
-
-    if tts_provider == 'elevenlabs':
+        GEMINI_API_KEY = check_api_key(SERVICE_NAME, GEMINI_KEY_USER_NAME)
         ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
+
         tts_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
         validate_voices_elevenlabs(tts_client, speaker_one_voice, speaker_two_voice)
-    else:
-        tts_client = genai.Client(api_key=GEMINI_API_KEY)
-        speaker_one_voice, speaker_two_voice = select_voices_google(speaker_one_voice, speaker_two_voice)
 
-        speaker_one_prefix, speaker_two_prefix = clean_and_validate_speaker_labels(
-            speaker_one_prefix, speaker_two_prefix
-        )
+        TEXT_MODEL = 'gemini-2.5-pro'
+        TTS_MODEL = 'eleven_multilingual_v2'
 
-    TEXT_MODEL = 'gemini-2.5-pro'
-    TTS_MODEL_GOOGLE = 'gemini-2.5-pro-preview-tts'
+        TIMESTAMP = int(time.time())
+        
+        if (
+            not path_to_pdf 
+            and not text_summary_file 
+            and not transcript_file
+            and not backup_file_for_regen
+        ):
+                typer.echo(
+                    "path_to_pdf required if not providing an existing "
+                    "text summary, transcript, or backup file. Exiting."
+                )
+                raise typer.Exit(1)
 
-    TIMESTAMP = int(time.time())
-    
-    # check/config output directory
-    if output_dir:
-        if not dir_is_valid(output_dir):
-            typer.echo("Output directory isn't valid. Exiting...")
-            raise typer.Exit(code=1)
-    else:
-        output_dir = Path.cwd()
+        # check/config output directory
+        if output_dir:
+            if not dir_is_valid(output_dir):
+                typer.echo("Output directory isn't valid. Exiting...")
+                raise typer.Exit(code=1)
+        else:
+            output_dir = Path.cwd()
 
-    # generate text summary
-    if path_to_pdf and not text_summary_file and not transcript_file:
-        text_summary = execute_pdf_workflow(path_to_pdf, output_dir, GEMINI_API_KEY, TIMESTAMP, TEXT_MODEL)
+        # generate text summary
+        if (
+            path_to_pdf 
+            and not text_summary_file 
+            and not transcript_file
+            and not backup_file_for_regen
+        ):
+            text_summary = execute_pdf_workflow(path_to_pdf, output_dir, GEMINI_API_KEY, TIMESTAMP, TEXT_MODEL)
 
-    # handle existing/inputted text summary
-    if text_summary_file:
-        if not file_is_valid(text_summary_file, '.txt'):
-            typer.echo("Exiting...")
-            raise typer.Exit(code=1)
-        text_summary = read_text_from_file(text_summary_file)
-    
-    # generate transcript
-    if not transcript_file:
-        transcript = execute_transcript_generation_workflow(
-            text_summary,
-            output_dir,
-            GEMINI_API_KEY,
-            TRANSCRIPT_SYS_INSTRUCTIONS,
-            TIMESTAMP,
-            speaker_one_prefix,
-            speaker_two_prefix,
-            TEXT_MODEL
-        )
-
-    # handle existing/inputted transcript
-    if transcript_file:
-        if not file_is_valid(transcript_file, '.txt'):
-            typer.echo("Exiting...")
-            raise typer.Exit(code=1)
-        transcript = read_text_from_file(transcript_file)
-
-    # chunk transcript
-    typer.echo("Chunking transcript. This may take a few minutes...")
-    if tts_provider == 'elevenlabs':
-        transcript_chunks = generate_text_to_dialogue_payloads(
-            transcript, 
-            speaker_one_voice, 
-            speaker_two_voice
-        )
-    else:
-        transcript_chunks = chunk_string(transcript)
-    typer.echo(f"Transcript split into {len(transcript_chunks)} chunks.")
-
-    # generate audio from chunks
-    typer.echo(
-                "Generating audio from transcript chunks. "
-                "This could take a while (up to 10 minutes per chunk)..."
+        # handle existing/inputted text summary
+        if (
+            text_summary_file
+            and not transcript_file
+            and not backup_file_for_regen
+        ):
+            if not file_is_valid(text_summary_file, '.txt'):
+                typer.echo("Exiting...")
+                raise typer.Exit(code=1)
+            text_summary = read_text_from_file(text_summary_file)
+        
+        # generate transcript
+        if not transcript_file and not backup_file_for_regen:
+            transcript = execute_transcript_generation_workflow(
+                text_summary,
+                output_dir,
+                GEMINI_API_KEY,
+                TRANSCRIPT_SYS_INSTRUCTIONS,
+                TIMESTAMP,
+                TEXT_MODEL
             )
-    audio_chunk_filepaths: List[Path] = generate_audio_chunks(
-        transcript_chunks, 
-        TIMESTAMP, 
-        output_dir,
-        tts_provider=tts_provider,
-        tts_client=tts_client,
-        tts_model_google=TTS_MODEL_GOOGLE,
-        speaker_one_voice=speaker_one_voice,
-        speaker_two_voice=speaker_two_voice,
-        chosen_speaker_one_prefix=speaker_one_prefix,
-        chosen_speaker_two_prefix=speaker_two_prefix  
-    )
 
-    # combine chunk audio files
-    typer.echo("Combining audio chunk files...")
-    combined_audio_filepath = Path(output_dir / f"combined_audio_{TIMESTAMP}.wav")
-    combine_wav_files(audio_chunk_filepaths, combined_audio_filepath)
-    typer.echo(f"Combined audio saved to {str(combined_audio_filepath)}")
+        # handle existing/inputted transcript
+        if transcript_file and not backup_file_for_regen:
+            if not file_is_valid(transcript_file, '.txt'):
+                typer.echo("Exiting...")
+                raise typer.Exit(code=1)
+            transcript = read_text_from_file(transcript_file)
 
-    delete_audio_chunks = typer.confirm(
-        "Do you wish to delete the partial audio chunks?\n"
-        "Choose No if you wish to save them in case they need to be respliced later."
+        if not backup_file_for_regen:
+            # chunk transcript
+            typer.echo("Chunking transcript. This may take a few minutes...")
+            transcript_chunks = create_speaker_text_chunks(transcript)
+            typer.echo(f"Transcript split into {len(transcript_chunks)} chunks.")
+
+            # create generation plan
+            generation_data = []
+            audio_chunk_filepaths = []
+            for ix, transcript_chunk in enumerate(transcript_chunks):
+                output_filepath = Path(output_dir / f"audio_chunk_{ix:03d}_{TIMESTAMP}.wav")
+                if ix == 0 or ix % 2 == 0:
+                    voice_id = speaker_one_voice
+                else:
+                    voice_id = speaker_two_voice
+                for text_string in transcript_chunk: 
+                    generation_data.append({'voice_id': voice_id, 'text': text_string, 'filepath': output_filepath})
+                    audio_chunk_filepaths.append(output_filepath)
+            write_backup_to_json_file(generation_data)
+        else:
+            # TODO: read and validate saved generation plan
+            pass
+
+        # TODO: iterate over generation data
+        typer.echo(
+            "Generating audio from transcript chunks. "
+            "This could take a while (up to 10 minutes per chunk)..."
         )
+        for ix, generation_datum in enumerate(generation_data):
+            text_string = generation_datum["text"]
+            voice_id = generation_datum["voice_id"]
+            output_filepath = Path(generation_datum["output_filepath"])
+            typer.echo(f"Generating audio chunk {ix} of {len(generation_data)}...")
+            generate_audio_with_timeout(
+                text=text_string,
+                voice_id=voice_id,
+                output_file=output_filepath,
+                tts_client=tts_client,
+                model_id=TTS_MODEL
+            )
+      
+        # combine chunk audio files
+        typer.echo("Combining audio chunk files...")
+        combined_audio_filepath = Path(output_dir / f"combined_audio_{TIMESTAMP}.wav")
+        combine_wav_files(audio_chunk_filepaths, combined_audio_filepath)
+        typer.echo(f"Combined audio saved to {str(combined_audio_filepath)}")
 
-    if delete_audio_chunks:
-        delete_files(audio_chunk_filepaths)
+        delete_audio_chunks = typer.confirm(
+            "Do you wish to delete the partial audio chunks?\n"
+            "Choose No if you wish to save them in case they need to be respliced later."
+            )
 
-    typer.echo("Scripted completed.")
+        if delete_audio_chunks:
+            delete_files(audio_chunk_filepaths)
+
+        typer.echo("Scripted completed.")
 
 
 def dir_is_valid(
@@ -566,211 +479,154 @@ def read_text_from_file(
     with open(text_filepath, 'r') as f:
         text = f.read()
     return text
+      
 
-
-def generate_text_to_dialogue_payloads(
-    transcript: str,
-    voice_one_id: str,
-    voice_two_id: str,
-    char_limit: int = 3000 # safe upper threshold accepted by APIs is probably ~3000 
-):
-    """
-    Assign voice IDs to unlabeled transcript chunks
-    and inject into payloads, for use with ElevenLabs
-    Text to Dialog API.
-    """
-    payloads = []
-    snippets = [line for line in transcript.splitlines() if line]
-    text_char_count = 0
-    payload = []
-    for ix, snippet in enumerate(snippets):
-        text_char_count = text_char_count + len(snippet)
-
-        if text_char_count >= char_limit:
-            text_char_count = 0
-            if payload:
-                payloads.append(payload)
-                payload = []
-
-        if ix == 0 or ix % 2 == 0:
-            voice_id_to_use = voice_one_id
-        else:
-            voice_id_to_use = voice_two_id
-
-        input = { 'text': snippet, 'voice_id': voice_id_to_use }
-
-        payload.append(input)
-    
-    if payload:
-        payloads.append(payload)
-    
-    return payloads
-        
-
-def chunk_string(
+def create_speaker_text_chunks(
     text_string: str,
     char_limit: int = 3000
 ):
     """
     Generate a list of strings from a single string,
-    keeping within a specified token limit. Used for
-    simply chunking for Google TTS.
+    splitting by lines. If a line exceeds char_limit, it's 
+    further split by sentences using the helper function.
+
+    Returns list of lists of strings. Each sublist represents
+    the speaking turn of a speaker.
     """  
-    chunks = []
+    chunks_by_speaker = []
+    # Filter out empty lines
     lines = [line for line in text_string.splitlines() if line]
-    text_char_count = 0
-    chunk = ''
+    
     for line in lines:
-        text_char_count = text_char_count + len(line)
+        # Check if the line (speaker segment) is within the limit
+        if len(line) <= char_limit:
+            # If within limit, append as a single-item list
+            chunks_by_speaker.append([line])
+        else:
+            # If over limit, use the helper function to split by sentences
+            sub_chunks = chunk_segment_by_sentences(line, char_limit)
+            # Append the resulting list of smaller chunks
+            chunks_by_speaker.append(sub_chunks)
+            
+    return chunks_by_speaker
 
-        if text_char_count >= char_limit:
-            text_char_count = 0
-            if chunk:
-                chunks.append(chunk)
-                chunk = ''
-
-        chunk += '\n\n' + line
     
-    if chunk:
-        chunks.append(chunk)
+def chunk_segment_by_sentences(
+    segment: str,
+    char_limit: int
+) -> List[str]:
+    """
+    Chunks a single speaker segment into smaller strings
+    based on sentences, ensuring each chunk respects the char_limit.
+    This is only called when the initial segment exceeds char_limit.
+    """
+       
+    # Use NLTK to split the content into sentences
+    sentences = nltk.tokenize.sent_tokenize(segment)
     
-    return chunks
+    current_speaker_chunks = []
+    current_chunk_content = ""
+
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+
+        # Prepare for length calculation
+        separator = " " if current_chunk_content else ""
+        
+        # Calculate the length of the new chunk *if* the sentence is added
+        total_len_if_added = len(current_chunk_content) + len(separator) + len(sentence)
+
+        # Individual sentence exceeds the limit
+        if len(sentence) > char_limit:
+            typer.echo(
+                    (
+                        f"Warning: Sentence in segment '{segment[:50]}...' "
+                        f"exceeds char_limit ({char_limit}). Please edit and rerun "
+                        f"using the --transcript_file flag."
+                    )
+                )
+            raise typer.Exit(code=1)
+        
+        # Adding the new sentence would exceed the limit
+        if total_len_if_added > char_limit:
+            # Flush the current accumulated chunk
+            if current_chunk_content:
+                current_speaker_chunks.append(current_chunk_content)
+            
+            # Start a new chunk with the current sentence
+            current_chunk_content = sentence
+        else:
+            # Otherwise, append the sentence to the current chunk content
+            current_chunk_content += separator + sentence
+
+    # Append any remaining text
+    if current_chunk_content:
+        current_speaker_chunks.append(current_chunk_content)
+            
+    return current_speaker_chunks
 
 
-def generate_audio_chunks(
-    chunks: Union[List[str], List[List[dict]]],
-    timestamp: int,
-    output_dir: Path,
-    tts_provider: Literal['google', 'elevenlabs'],
-    tts_client: Union[genai.Client, ElevenLabs],
-    tts_model_google: str,
-    speaker_one_voice: str,
-    speaker_two_voice: str,
-    chosen_speaker_one_prefix: Optional[str] = None,
-    chosen_speaker_two_prefix: Optional[str] = None,
+def generate_audio_with_timeout(
+    text: str,
+    voice_id: str,
+    output_file: Path,
+    tts_client: ElevenLabs,
+    model_id: str = 'eleven_multilingual_v2',
     timeout: float = (60.0 * 10) # 10 minutes per chunk/call
 ):
     """
-    Given a list of text chunks or Text to Dialog payloads, generate
-    and save audio chunks to file, returning
-    list of audio chunk filepaths.
+    Wrapper around generate_audio_chunk_from_chunk,
+    designed to allow for custom timeout.
     """
-    audio_chunk_filepaths = []
+    # use ThreadPoolExecutor to allow for custom timeout on execution of API calls
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        try:
+            future = executor.submit(
+                generate_audio_chunk_from_chunk,
+                text=text, 
+                voice_id=voice_id,
+                output_file=output_file,
+                tts_client=tts_client,
+                model_id=model_id
+            )
 
-    for i, chunk in enumerate(chunks):
-        typer.echo(f"Generating audio chunk {i+1} of {len(chunks)}...")
-        audio_chunk_filepath = Path(output_dir / f"audio_chunk_{i:03d}_{timestamp}.wav")
-        
-        # use ThreadPoolExecutor to allow for custom timeout on execution of API calls
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            try:
-                if tts_provider == 'elevenlabs':
-                    future = executor.submit(
-                        generate_audio_chunk_from_chunk_elevenlabs,
-                        payload=chunk, 
-                        output_file=audio_chunk_filepath,
-                        tts_client=tts_client
-                    )
-                else:
-                    future = executor.submit(
-                        generate_audio_chunk_from_text_chunk_google,
-                        text=chunk, 
-                        output_file=audio_chunk_filepath, 
-                        tts_client=tts_client, 
-                        model_name=tts_model_google,
-                        speaker_one_voice=speaker_one_voice,
-                        speaker_two_voice=speaker_two_voice,
-                        chosen_speaker_one_prefix=chosen_speaker_one_prefix,
-                        chosen_speaker_two_prefix=chosen_speaker_two_prefix
-                        
-                    )
-                # wait for the executor result, enforcing timeout
-                future.result(timeout=timeout)
+            # wait for the executor result, enforcing timeout
+            future.result(timeout=timeout)
 
-                audio_chunk_filepaths.append(audio_chunk_filepath)
-                typer.echo(f"Audio chunk saved to {str(audio_chunk_filepath)}...")
-            except TimeoutError:
-                print(f"API call exceeded timeout of {timeout / 60} minutes. Exiting.")
-                raise typer.Exit(code=1)
-    
-    return audio_chunk_filepaths
+            typer.echo(f"Audio chunk saved to {str(output_file)}...")
+        except TimeoutError:
+            typer.echo(f"API call exceeded timeout of {timeout / 60} minutes. Exiting.")
+            raise typer.Exit(code=1)
 
-
-def generate_audio_chunk_from_chunk_elevenlabs(
-    payload: list[dict],
+def generate_audio_chunk_from_chunk(
+    text: str,
+    voice_id: str,
     output_file: Path,
     tts_client: ElevenLabs,
-    model_id: str = 'eleven_v3', # only model available for multispeaker TTS
-    stability: Literal['0.0', '0.5', '1.0'] = '0.5' # API default is 0.5 (float); 
-                                                    # only three options available with
-                                                    # eleven_v3 model
+    model_id: str = 'eleven_multilingual_v2',
 ):
     """
-    Given a payload, generate audio using ElevenLabs
-    Text to Dialog API
+    Given a text string, generate audio using ElevenLabs
+    Text to Speech API
     """
-    audio_generator = tts_client.text_to_dialogue.convert(
+    audio_generator = tts_client.text_to_speech.convert(
         model_id=model_id,
-        inputs=payload,
-        settings=ModelSettingsResponseModel(stability=float(stability)),
+        text=text,
+        voice_id=voice_id,
+        settings=VoiceSettings(
+            stability=0.5,
+            similarity_boost=0.75,
+            style=0.0,
+            use_speaker_boost=True,
+            speed=0.9
+            ),
         output_format='pcm_24000' # important to use this encoding
                                   # for compatibility with write_audio_data_to_wav_file
     )
     audio_bytes = b"".join(list(audio_generator))
     write_audio_data_to_wav_file(output_file, audio_bytes)
-
-def generate_audio_chunk_from_text_chunk_google(
-    text: str,
-    output_file: Path,
-    tts_client: genai.Client, # Google TTS client
-    model_name: str = 'gemini-2.5-pro-preview-tts',
-    speaker_one_voice: str = 'Puck',
-    speaker_two_voice: str = 'Zephyr',
-    chosen_speaker_one_prefix: str = "Speaker 1",
-    chosen_speaker_two_prefix: str = "Speaker 2",
-    temperature: float = 1.0, # avail range and default varies by model
-):
-    """
-    Given a text prompt, generate audio using Google TTS
-
-    Note: as of 11/12, adjusting the temperature below
-    0.7 with gemini-2.5-pro-preview-tts resulted in audio
-    dropping out (0.6) or failure of API to respond at all (0.5).
-    """
-    response = tts_client.models.generate_content(
-        model=model_name,
-        contents=text,
-        config=types.GenerateContentConfig(
-            temperature=temperature,
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                multi_speaker_voice_config=types.MultiSpeakerVoiceConfig(
-                    speaker_voice_configs=[
-                    types.SpeakerVoiceConfig(
-                        speaker=chosen_speaker_one_prefix,
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name=speaker_one_voice,
-                            )
-                        )
-                    ),
-                    types.SpeakerVoiceConfig(
-                        speaker=chosen_speaker_two_prefix,
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name=speaker_two_voice,
-                            )
-                        )
-                    ),
-                    ]
-                )
-            )
-        )
-    )
-
-    data = response.candidates[0].content.parts[0].inline_data.data
-
-    write_audio_data_to_wav_file(output_file, data)
 
 
 def write_audio_data_to_wav_file(
@@ -907,87 +763,12 @@ def validate_voices_elevenlabs(
         typer.echo("Please rerun the script with valid voice selections.")
         raise typer.Exit(1)
 
-
-def select_voices_google(
-    speaker_one_voice: Optional[str],
-    speaker_two_voice: Optional[str]
-):
-    """
-    Select Google TTS voices, based on user input and defaults.
-    """
-    voices_left_to_choose_from = list(VOICES_GOOGLE)
-    
-    # remove selected voices from voice candidates list, as applicable
-    if speaker_one_voice:
-        try:
-            matching_index = voices_left_to_choose_from.index(speaker_one_voice)
-            voices_left_to_choose_from.pop(matching_index)
-        except:
-            typer.echo(f"Invalid voice ({speaker_one_voice}) selected for speaker one. Exiting.")
-            raise typer.Exit(1)
-    if speaker_two_voice:
-        try:
-            matching_index = voices_left_to_choose_from.index(speaker_two_voice)
-            voices_left_to_choose_from.pop(matching_index)
-        except:
-            typer.echo(f"Invalid voice ({speaker_two_voice}) selected for speaker two. Exiting.")
-            raise typer.Exit(1)
-
-    # set remaining voices, as applicable
-    if not speaker_one_voice:
-        random_index = random.randint(0, len(voices_left_to_choose_from) - 1)
-        speaker_one_voice = voices_left_to_choose_from.pop(random_index)
-    if not speaker_two_voice:
-        random_index = random.randint(0, len(voices_left_to_choose_from) - 1)
-        speaker_two_voice = voices_left_to_choose_from.pop(random_index)    
-    
-    return speaker_one_voice, speaker_two_voice
-
-
-def clean_and_validate_speaker_labels(
-    speaker_one_prefix: Optional[str],
-    speaker_two_prefix: Optional[str]
-):
-    """
-    Clean and validate speaker labels for/in transcript 
-    and for use in multivoice TTS, based on user input and defaults.
-    """
-    if speaker_one_prefix:
-        speaker_one_prefix = speaker_one_prefix.strip()
-        if speaker_one_prefix[-1] == ":":
-            chosen_speaker_one_prefix = speaker_one_prefix[:-1]
-        else:
-            chosen_speaker_one_prefix = speaker_one_prefix
-    else:
-        chosen_speaker_one_prefix = DEFAULT_SPEAKER_ONE_LABEL
-
-    if speaker_two_prefix:
-        speaker_two_prefix = speaker_two_prefix.strip()
-        if speaker_two_prefix[-1] == ":":
-            chosen_speaker_two_prefix = speaker_two_prefix[:-1]
-        else:
-            chosen_speaker_two_prefix = speaker_two_prefix
-    else:
-        chosen_speaker_two_prefix = DEFAULT_SPEAKER_TWO_LABEL
-
-    if chosen_speaker_one_prefix == chosen_speaker_two_prefix:
-        typer.echo(
-                f"Speaker prefixes/labels must be unique. "
-                f"Speaker 1 label: {chosen_speaker_one_prefix}, "
-                f"Speaker 2 label: {chosen_speaker_two_prefix}. "
-                f"Exiting."
-            )
-        raise typer.Exit(1)
-
-    return chosen_speaker_one_prefix, chosen_speaker_two_prefix
-
-
 def execute_pdf_workflow(
     path_to_pdf: Path,
     output_dir: Path,
     api_key: str,
     timestamp: int,
-    text_model: str = 'gemini-2.5-flash'
+    text_model: str = 'gemini-2.5-pro'
 ):
     """
     Workflow for performing document-understanding inference
@@ -1014,38 +795,13 @@ def execute_pdf_workflow(
         )
         return text_summary
 
-def add_speaker_labels_to_transcript(
-    transcript: str,
-    speaker_one_prefix: str,
-    speaker_two_prefix: str
-):
-    """
-    Add speaker labels (Speaker 1, Speaker 2) to 
-    conversation turns in transcript.
-
-    Assumes transcript conversation turns are
-    newline delimited.
-    """
-    labeled_statements = []
-    original_statements = [line for line in transcript.splitlines() if line]
-    for ix, statement in enumerate(original_statements):
-        if ix == 0 or ix % 2 == 0:
-            statement = f"{speaker_one_prefix}: {statement}"
-        else:
-            statement = f"{speaker_two_prefix}: {statement}"
-        labeled_statements.append(statement)
-    labeled_transcript = '\n\n'.join(labeled_statements)
-    return labeled_transcript
-
 def execute_transcript_generation_workflow(
     text_summary: str,
     output_dir: Path,
     api_key: str,
     sys_instrux: str,
     timestamp: int,
-    speaker_one_prefix: Optional[str] = None,
-    speaker_two_prefix: Optional[str] = None,
-    text_model: str = 'gemini-2.5-flash',
+    text_model: str = 'gemini-2.5-pro',
 ):
     """
     Workflow for generating a podcast transcript from
@@ -1053,9 +809,6 @@ def execute_transcript_generation_workflow(
     """
     typer.echo("Generating transcript from text summary. This may take a few minutes...")
     transcript = generate_text(text_summary, api_key, sys_instrux, text_model)
-    
-    if speaker_one_prefix and speaker_two_prefix:
-        transcript = add_speaker_labels_to_transcript(transcript, speaker_one_prefix, speaker_two_prefix)
     
     transcript_output_path = Path(output_dir / f'transcript_{timestamp}.txt')
     write_text_to_file(transcript, transcript_output_path)
@@ -1071,6 +824,9 @@ def execute_transcript_generation_workflow(
         True,
     )
     return transcript
+
+
+
 
 
 if __name__ == "__main__":
