@@ -639,7 +639,7 @@ def generate_audio_chunk_from_chunk(
             similarity_boost=0.75,
             style=0.0,
             use_speaker_boost=True,
-            speed=0.9
+            speed=1.0
             ),
         output_format='pcm_24000' # important to use this encoding
                                   # for compatibility with write_audio_data_to_wav_file
