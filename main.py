@@ -6,6 +6,7 @@ import json
 import keyring
 import nltk
 from pathlib import Path
+import random
 from simple_term_menu import TerminalMenu
 import time
 import typer
@@ -739,36 +740,61 @@ def generate_audio_chunk_from_chunk(
     """
     Given a text string, generate audio using ElevenLabs
     Text to Speech API
+
+    previous_request_ids should be from requests made
+    no longer than 2 hours ago, but it appears that providing
+    older or invalid IDs does not adversely impact generation
+    or trigger an error (as compared to providing no IDs)
+
+    max of 3 previous_requests_ids is accepted by the API
     """
-    # TODO: check previous_request_ids, next_request_ids params of convert!
+    max_retries = 5
+    delay = 0.5
     
     # max of three previous request IDs are accepted
     # https://elevenlabs.io/docs/cookbooks/text-to-speech/request-stitching
     if previous_request_ids:
         previous_request_ids = previous_request_ids[-3:]
 
-    with tts_client.text_to_speech.with_raw_response.convert(
-        model_id=model_id,
-        text=text,
-        voice_id=voice_id,
-        voice_settings=VoiceSettings(
-            stability=0.5,
-            similarity_boost=0.75,
-            style=0.0,
-            use_speaker_boost=True,
-            speed=1.0
-            ),
-        previous_request_ids=previous_request_ids,
-        output_format='pcm_24000' # important to use this encoding
-                                  # for compatibility with write_audio_data_to_wav_file
-    ) as response:
-        request_id = response._response.headers.get("request-id")
-        audio_data = b''.join(chunk for chunk in response.data)
+    for attempt in range(max_retries):
+        try:
+            with tts_client.text_to_speech.with_raw_response.convert(
+                model_id=model_id,
+                text=text,
+                voice_id=voice_id,
+                voice_settings=VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    use_speaker_boost=True,
+                    speed=1.0
+                    ),
+                previous_request_ids=previous_request_ids,
+                output_format='pcm_24000' # important to use this encoding
+                                        # for compatibility with write_audio_data_to_wav_file
+            ) as response:
+                request_id = response._response.headers.get("request-id")
+                audio_data = b''.join(chunk for chunk in response.data)
+                write_audio_data_to_wav_file(output_file, audio_data)
+                return request_id
+        except Exception as e:
+            jitter_wait(delay, attempt, e)
+
+        typer.echo("Max retries exceeded. Exiting.")
+        raise typer.Exit(1)   
     
-    write_audio_data_to_wav_file(output_file, audio_data)
 
-    return request_id
 
+
+def jitter_wait(delay: float, attempt: int, e: Exception = None):
+    """
+    Set wait time and sleep
+    """
+    wait = delay * (2**attempt)
+    jittered_wait = wait * random.uniform(0.8, 1.2)
+    error_str = "error." if not e else f"error: {e}"
+    typer.echo(f"Retrying after {jittered_wait:.1f}s due to {error_str}...")
+    time.sleep(jittered_wait)
 
 def write_audio_data_to_wav_file(
         output_path: Path, 
