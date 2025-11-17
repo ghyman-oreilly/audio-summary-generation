@@ -124,7 +124,7 @@ def combine_audio_files(
         )
     ),
 ):
-    TIMESTAMP = int(time.time())
+    timestamp = int(time.time())
     
     # validate input files
     if not input_files or len(input_files) < 2:
@@ -144,7 +144,7 @@ def combine_audio_files(
     else:
         output_dir = Path.cwd()
 
-    combined_audio_filepath = Path(output_dir / f"combined_audio_{TIMESTAMP}.wav")
+    combined_audio_filepath = Path(output_dir / f"combined_audio_{timestamp}.wav")
     combine_wav_files(input_files, combined_audio_filepath)
     typer.echo(f"Combined audio saved to {str(combined_audio_filepath)}")
 
@@ -260,7 +260,8 @@ def generate(
                 "Provide path to JSON file containing backup data. "
                 "This will provide an opportunity to regenerate previously generated segments. "
                 "If providing this text file, the PDF path argument and text_summary_file options "
-                "don't need to be provided."
+                "don't need to be provided. Any output_filepath argument will be ignored, as the "
+                "directory containing the previously generated audio files will be used."
             )
         ),
         speaker_one_voice: Optional[str] = typer.Option(
@@ -288,7 +289,7 @@ def generate(
         TEXT_MODEL = 'gemini-2.5-pro'
         TTS_MODEL = 'eleven_multilingual_v2'
 
-        TIMESTAMP = int(time.time())
+        timestamp = int(time.time())
         
         if (
             not path_to_pdf 
@@ -303,14 +304,14 @@ def generate(
                 raise typer.Exit(1)
 
         # check/config output directory
-        if output_dir:
+        if output_dir and not backup_file_for_regen:
             if not dir_is_valid(output_dir):
                 typer.echo("Output directory isn't valid. Exiting...")
                 raise typer.Exit(code=1)
         else:
             output_dir = Path.cwd()
 
-        backup_filepath = Path(output_dir / f"backup_{TIMESTAMP}.json")
+        backup_filepath = Path(output_dir / f"backup_{timestamp}.json")
 
         # generate text summary
         if (
@@ -319,7 +320,7 @@ def generate(
             and not transcript_file
             and not backup_file_for_regen
         ):
-            text_summary = execute_pdf_workflow(path_to_pdf, output_dir, GEMINI_API_KEY, TIMESTAMP, TEXT_MODEL)
+            text_summary = execute_pdf_workflow(path_to_pdf, output_dir, GEMINI_API_KEY, timestamp, TEXT_MODEL)
 
         # handle existing/inputted text summary
         if (
@@ -339,7 +340,7 @@ def generate(
                 output_dir,
                 GEMINI_API_KEY,
                 TRANSCRIPT_SYS_INSTRUCTIONS,
-                TIMESTAMP,
+                timestamp,
                 TEXT_MODEL
             )
 
@@ -361,7 +362,7 @@ def generate(
             generation_data = []
             audio_chunk_filepaths = []
             for ix, transcript_chunk in enumerate(transcript_chunks):
-                output_filepath = Path(output_dir / f"audio_chunk_{ix:03d}_{TIMESTAMP}.wav")
+                output_filepath = Path(output_dir / f"audio_chunk_{ix:03d}_{timestamp}.wav")
                 if ix == 0 or ix % 2 == 0:
                     voice_id = speaker_one_voice
                 else:
@@ -404,7 +405,11 @@ def generate(
 
             all_generation_data = read_backup_from_json_file(backup_file_for_regen)
 
+            # set output directory
+            output_dir = Path(all_generation_data[1]['filepath']).parent
+
             # TODO: validate voice IDs?
+            # TODO: validate segment filepaths
 
             # user selects segments to regen
             ix_of_items_to_regen = generate_menu(
@@ -417,13 +422,15 @@ def generate(
                 typer.echo('Exiting.')
                 raise typer.Exit(0)
 
-            data_to_regenerate = [all_generation_data[i] for i in ix_of_items_to_regen]
+            data_to_regenerate = [(i, all_generation_data[i]) for i in ix_of_items_to_regen]
+            new_filepaths_lookup_map = {}
 
             # regen segments
-            for ix, generation_datum in enumerate(data_to_regenerate):
+            for ix, generation_datum_tuple in enumerate(data_to_regenerate):
+                original_segment_ix, generation_datum = generation_datum_tuple
                 text_string = generation_datum["text"]
                 voice_id = generation_datum["voice_id"]
-                output_filepath = Path(generation_datum["filepath"])
+                output_filepath = Path(output_dir / f"audio_chunk_{original_segment_ix:03d}_{timestamp}.wav")
                 typer.echo(f"Generating audio chunk {ix+1} of {len(data_to_regenerate)}...")
                 generate_audio_with_timeout(
                     text=text_string,
@@ -432,23 +439,31 @@ def generate(
                     tts_client=tts_client,
                     model_id=TTS_MODEL
                 )
-      
-        # TODO: if user has regenned some segments, we'll want to give them the OPTION to 
-        # combine all (from backup file) and overwrite combined audio file
+                new_filepaths_lookup_map[original_segment_ix] = str(output_filepath)
+            
+            # collect updated and original segment filepaths
+            audio_chunk_filepaths = [
+                new_filepaths_lookup_map.get(i, x['filepath']) 
+                for i, x in enumerate(all_generation_data)
+            ]
 
         # combine chunk audio files
         typer.echo("Combining audio chunk files...")
-        combined_audio_filepath = Path(output_dir / f"combined_audio_{TIMESTAMP}.wav")
+        combined_audio_filepath = Path(output_dir / f"combined_audio_{timestamp}.wav")
         combine_wav_files(audio_chunk_filepaths, combined_audio_filepath)
         typer.echo(f"Combined audio saved to {str(combined_audio_filepath)}")
 
-        # TODO: Consider: maybe we want to make it harder to delete (i.e., Y is don't delete)
-        delete_audio_chunks = typer.confirm(
-            "Do you wish to delete the partial audio chunks?\n"
-            "Choose No if you wish to save them in case they need to be respliced later."
-            )
+        save_audio_chunks = typer.confirm(
+            (
+                "Do you wish to save the partial audio chunks?\n "
+                "Choose Yes (default) if you wish to save them, in case "
+                "they some segments must be regenerated later. "
+                "Otherwise, select No to delete the segments."
+            ),
+            default=True
+        )
 
-        if delete_audio_chunks:
+        if not save_audio_chunks:
             delete_files(audio_chunk_filepaths)
 
         typer.echo("Scripted completed.")
@@ -787,13 +802,14 @@ def combine_wav_files(
 
 
 def delete_files(
-    files_to_delete: List[Path]
+    files_to_delete: List[Union[Path, str]]
 ):
     """
     Given a list of filepaths,
     delete the files.
     """
     for file_path in files_to_delete:
+        file_path = Path(file_path)
         try:
             # Check if the path is a file and then delete it
             if file_path.is_file():
