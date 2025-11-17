@@ -38,7 +38,7 @@ def read_backup_from_json_file(input_filepath: Union[str, Path]):
 
 def validate_backup_data(
     json_data: List[dict],
-    expected_fields: List[str] = ['voice_id', 'text', 'filepath']
+    expected_fields: List[str] = ['voice_id', 'text', 'filepath', 'request_id']
 ):
     """
     Validate that loaded backup data matches
@@ -384,18 +384,24 @@ def generate(
                 "This could take a while (up to 10 minutes per chunk)..."
             )
             # TODO: abstract
+            request_ids = []
             for ix, generation_datum in enumerate(generation_data):
                 text_string = generation_datum["text"]
                 voice_id = generation_datum["voice_id"]
                 output_filepath = Path(generation_datum["filepath"])
                 typer.echo(f"Generating audio chunk {ix+1} of {len(generation_data)}...")
-                generate_audio_with_timeout(
+                request_id = generate_audio_with_timeout(
                     text=text_string,
                     voice_id=voice_id,
                     output_file=output_filepath,
                     tts_client=tts_client,
-                    model_id=TTS_MODEL
+                    model_id=TTS_MODEL,
+                    previous_request_ids=request_ids[-1:] # previous 1 ID (we can include up to 3,
+                                                          # but for our use case, 1 seems optimal, based 
+                                                          # on some experimentation)
                 )
+                request_ids.append(request_id)
+                generation_data[ix]['request_id'] = request_id
             write_backup_to_json_file(generation_data, backup_filepath)
         else:
             # read and validate saved generation plan
@@ -430,6 +436,10 @@ def generate(
                 original_segment_ix, generation_datum = generation_datum_tuple
                 text_string = generation_datum["text"]
                 voice_id = generation_datum["voice_id"]
+                try:
+                    previous_request_id = data_to_regenerate[original_segment_ix-1] if original_segment_ix != 0 else ''
+                except:
+                    previous_request_id = ''
                 output_filepath = Path(output_dir / f"audio_chunk_{original_segment_ix:03d}_{timestamp}.wav")
                 typer.echo(f"Generating audio chunk {ix+1} of {len(data_to_regenerate)}...")
                 generate_audio_with_timeout(
@@ -437,7 +447,8 @@ def generate(
                     voice_id=voice_id,
                     output_file=output_filepath,
                     tts_client=tts_client,
-                    model_id=TTS_MODEL
+                    model_id=TTS_MODEL,
+                    previous_request_ids=[previous_request_id]
                 )
                 new_filepaths_lookup_map[original_segment_ix] = str(output_filepath)
             
@@ -687,7 +698,8 @@ def generate_audio_with_timeout(
     output_file: Path,
     tts_client: ElevenLabs,
     model_id: str = 'eleven_multilingual_v2',
-    timeout: float = (60.0 * 10) # 10 minutes per chunk/call
+    timeout: float = (60.0 * 10), # 10 minutes per chunk/call
+    previous_request_ids: list[str] = []
 ):
     """
     Wrapper around generate_audio_chunk_from_chunk,
@@ -702,13 +714,16 @@ def generate_audio_with_timeout(
                 voice_id=voice_id,
                 output_file=output_file,
                 tts_client=tts_client,
-                model_id=model_id
+                model_id=model_id,
+                previous_request_ids=previous_request_ids
             )
 
             # wait for the executor result, enforcing timeout
-            future.result(timeout=timeout)
+            request_id = future.result(timeout=timeout)
 
             typer.echo(f"Audio chunk saved to {str(output_file)}...")
+
+            return request_id
         except TimeoutError:
             typer.echo(f"API call exceeded timeout of {timeout / 60} minutes. Exiting.")
             raise typer.Exit(code=1)
@@ -719,6 +734,7 @@ def generate_audio_chunk_from_chunk(
     output_file: Path,
     tts_client: ElevenLabs,
     model_id: str = 'eleven_multilingual_v2',
+    previous_request_ids: list[str] = []
 ):
     """
     Given a text string, generate audio using ElevenLabs
@@ -726,7 +742,12 @@ def generate_audio_chunk_from_chunk(
     """
     # TODO: check previous_request_ids, next_request_ids params of convert!
     
-    audio_generator = tts_client.text_to_speech.convert(
+    # max of three previous request IDs are accepted
+    # https://elevenlabs.io/docs/cookbooks/text-to-speech/request-stitching
+    if previous_request_ids:
+        previous_request_ids = previous_request_ids[-3:]
+
+    with tts_client.text_to_speech.with_raw_response.convert(
         model_id=model_id,
         text=text,
         voice_id=voice_id,
@@ -737,11 +758,16 @@ def generate_audio_chunk_from_chunk(
             use_speaker_boost=True,
             speed=1.0
             ),
+        previous_request_ids=previous_request_ids,
         output_format='pcm_24000' # important to use this encoding
                                   # for compatibility with write_audio_data_to_wav_file
-    )
-    audio_bytes = b"".join(list(audio_generator))
-    write_audio_data_to_wav_file(output_file, audio_bytes)
+    ) as response:
+        request_id = response._response.headers.get("request-id")
+        audio_data = b''.join(chunk for chunk in response.data)
+    
+    write_audio_data_to_wav_file(output_file, audio_data)
+
+    return request_id
 
 
 def write_audio_data_to_wav_file(
