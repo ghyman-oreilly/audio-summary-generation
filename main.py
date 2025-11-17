@@ -382,7 +382,7 @@ def generate(
             # iterate over generation data
             typer.echo(
                 "Generating audio from transcript chunks. "
-                "This could take a while (up to 10 minutes per chunk)..."
+                "This could take a while..."
             )
             # TODO: abstract
             request_ids = []
