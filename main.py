@@ -6,10 +6,10 @@ import json
 import keyring
 import nltk
 from pathlib import Path
-import random
+from simple_term_menu import TerminalMenu
 import time
 import typer
-from typing import List, Literal, Optional, Union
+from typing import List, Optional, Union
 import wave
 
 from prompts import TEXT_SUMMARY_PROMPT, TRANSCRIPT_SYS_INSTRUCTIONS
@@ -26,6 +26,56 @@ def write_backup_to_json_file(
     """
     with open(str(output_filepath), "w") as f:
         json.dump(input_data, f)
+
+def read_backup_from_json_file(input_filepath: Union[str, Path]):
+    """
+    Read JSON file and and validate data.
+    """
+    with open(str(input_filepath), "r") as f:
+        data = json.load(f)
+        validate_backup_data(data)
+        return data
+
+def validate_backup_data(
+    json_data: List[dict],
+    expected_fields: List[str] = ['voice_id', 'text', 'filepath']
+):
+    """
+    Validate that loaded backup data matches
+    expected shape and fields.
+    """
+    is_valid = True
+    
+    if not isinstance(json_data, list):
+        is_valid = False
+
+    for item in json_data:
+        if not isinstance(item, dict):
+            is_valid = False     
+        
+        for field in expected_fields:
+            try:
+                field_value = item.get(field)
+                if not isinstance(field_value, str):
+                    is_valid = False
+            except:
+                is_valid = False
+    
+    if not is_valid:
+        typer.echo(
+            f'Backup data must comprise a JSON list of objects, '
+            f'each of which should have the following fields with '
+            f'string values: {expected_fields}\n'
+            f'Exiting.'
+        )
+        typer.Exit(1)
+    
+    return is_valid
+
+def generate_menu(options, title=None, **kwargs):
+    terminal_menu = TerminalMenu(options, title=title, **kwargs)
+    index = terminal_menu.show()
+    return index
 
 def check_tokenizer_data_availability():
     """
@@ -337,7 +387,7 @@ def generate(
                 text_string = generation_datum["text"]
                 voice_id = generation_datum["voice_id"]
                 output_filepath = Path(generation_datum["filepath"])
-                typer.echo(f"Generating audio chunk {ix} of {len(generation_data)}...")
+                typer.echo(f"Generating audio chunk {ix+1} of {len(generation_data)}...")
                 generate_audio_with_timeout(
                     text=text_string,
                     voice_id=voice_id,
@@ -347,10 +397,41 @@ def generate(
                 )
             write_backup_to_json_file(generation_data, backup_filepath)
         else:
-            # TODO: read and validate saved generation plan
-            # TODO: allow user to select segments to regen
-            # TODO: regen segments
-            pass
+            # read and validate saved generation plan
+            if not file_is_valid(backup_file_for_regen, '.json'):
+                typer.echo("Exiting...")
+                raise typer.Exit(code=1)
+
+            all_generation_data = read_backup_from_json_file(backup_file_for_regen)
+
+            # TODO: validate voice IDs?
+
+            # user selects segments to regen
+            ix_of_items_to_regen = generate_menu(
+                [Path(x.get('filepath')).name for x in all_generation_data],
+                'Select audio segments to regenerate',
+                multi_select=True
+            )
+
+            if ix_of_items_to_regen is None:
+                typer.echo('Exiting.')
+                raise typer.Exit(0)
+
+            data_to_regenerate = [all_generation_data[i] for i in ix_of_items_to_regen]
+
+            # regen segments
+            for ix, generation_datum in enumerate(data_to_regenerate):
+                text_string = generation_datum["text"]
+                voice_id = generation_datum["voice_id"]
+                output_filepath = Path(generation_datum["filepath"])
+                typer.echo(f"Generating audio chunk {ix+1} of {len(data_to_regenerate)}...")
+                generate_audio_with_timeout(
+                    text=text_string,
+                    voice_id=voice_id,
+                    output_file=output_filepath,
+                    tts_client=tts_client,
+                    model_id=TTS_MODEL
+                )
       
         # TODO: if user has regenned some segments, we'll want to give them the OPTION to 
         # combine all (from backup file) and overwrite combined audio file
