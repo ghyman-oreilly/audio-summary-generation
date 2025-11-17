@@ -352,112 +352,31 @@ def generate(
                 raise typer.Exit(code=1)
             transcript = read_text_from_file(transcript_file)
 
+        # audio generation flows
         if not backup_file_for_regen:
-            # chunk transcript
-            typer.echo("Chunking transcript. This may take a few minutes...")
-            transcript_chunks = create_speaker_text_chunks(transcript)
-            typer.echo(f"Transcript split into {len(transcript_chunks)} chunks.")
-
-            # create generation plan
-            # TODO: abstract
-            generation_data = []
-            audio_chunk_filepaths = []
-            for ix, transcript_chunk in enumerate(transcript_chunks):
-                output_filepath = Path(output_dir / f"audio_chunk_{ix:03d}_{timestamp}.wav")
-                if ix == 0 or ix % 2 == 0:
-                    voice_id = speaker_one_voice
-                else:
-                    voice_id = speaker_two_voice
-                for text_string in transcript_chunk: 
-                    generation_data.append(
-                        {
-                            'voice_id': voice_id, 
-                            'text': text_string, 
-                            'filepath': str(output_filepath)
-                        }
-                    )
-                    audio_chunk_filepaths.append(output_filepath)
-            
-            # generate audio
-            # iterate over generation data
-            typer.echo(
-                "Generating audio from transcript chunks. "
-                "This could take a while..."
+            # first-pass generation use case
+            audio_chunk_filepaths = execute_audio_generation_workflow(
+                transcript,
+                output_dir,
+                timestamp,
+                speaker_one_voice,
+                speaker_two_voice,
+                tts_client,
+                TTS_MODEL,
+                backup_filepath
             )
-            # TODO: abstract
-            request_ids = []
-            for ix, generation_datum in enumerate(generation_data):
-                text_string = generation_datum["text"]
-                voice_id = generation_datum["voice_id"]
-                output_filepath = Path(generation_datum["filepath"])
-                typer.echo(f"Generating audio chunk {ix+1} of {len(generation_data)}...")
-                request_id = generate_audio_with_timeout(
-                    text=text_string,
-                    voice_id=voice_id,
-                    output_file=output_filepath,
-                    tts_client=tts_client,
-                    model_id=TTS_MODEL,
-                    previous_request_ids=request_ids[-1:] # previous 1 ID (we can include up to 3,
-                                                          # but for our use case, 1 seems optimal, based 
-                                                          # on some experimentation)
-                )
-                request_ids.append(request_id)
-                generation_data[ix]['request_id'] = request_id
-            write_backup_to_json_file(generation_data, backup_filepath)
         else:
-            # read and validate saved generation plan
+            # segment(s) regeneration use case
             if not file_is_valid(backup_file_for_regen, '.json'):
                 typer.echo("Exiting...")
                 raise typer.Exit(code=1)
 
-            all_generation_data = read_backup_from_json_file(backup_file_for_regen)
-
-            # set output directory
-            output_dir = Path(all_generation_data[1]['filepath']).parent
-
-            # TODO: validate voice IDs?
-            # TODO: validate segment filepaths
-
-            # user selects segments to regen
-            ix_of_items_to_regen = generate_menu(
-                [Path(x.get('filepath')).name for x in all_generation_data],
-                'Select audio segments to regenerate',
-                multi_select=True
+            output_dir, audio_chunk_filepaths = execute_audio_regeneration_workflow(
+                backup_file_for_regen,
+                tts_client,
+                TTS_MODEL,
+                timestamp
             )
-
-            if ix_of_items_to_regen is None:
-                typer.echo('Exiting.')
-                raise typer.Exit(0)
-
-            data_to_regenerate = [(i, all_generation_data[i]) for i in ix_of_items_to_regen]
-            new_filepaths_lookup_map = {}
-
-            # regen segments
-            for ix, generation_datum_tuple in enumerate(data_to_regenerate):
-                original_segment_ix, generation_datum = generation_datum_tuple
-                text_string = generation_datum["text"]
-                voice_id = generation_datum["voice_id"]
-                try:
-                    previous_request_id = data_to_regenerate[original_segment_ix-1] if original_segment_ix != 0 else ''
-                except:
-                    previous_request_id = ''
-                output_filepath = Path(output_dir / f"audio_chunk_{original_segment_ix:03d}_{timestamp}.wav")
-                typer.echo(f"Generating audio chunk {ix+1} of {len(data_to_regenerate)}...")
-                generate_audio_with_timeout(
-                    text=text_string,
-                    voice_id=voice_id,
-                    output_file=output_filepath,
-                    tts_client=tts_client,
-                    model_id=TTS_MODEL,
-                    previous_request_ids=[previous_request_id]
-                )
-                new_filepaths_lookup_map[original_segment_ix] = str(output_filepath)
-            
-            # collect updated and original segment filepaths
-            audio_chunk_filepaths = [
-                new_filepaths_lookup_map.get(i, x['filepath']) 
-                for i, x in enumerate(all_generation_data)
-            ]
 
         # combine chunk audio files
         typer.echo("Combining audio chunk files...")
@@ -480,6 +399,112 @@ def generate(
 
         typer.echo("Scripted completed.")
 
+def create_generation_data(
+        transcript_chunks: list[str],
+        output_dir: Path,
+        timestamp: str,
+        speaker_one_voice: str,
+        speaker_two_voice: str   
+):
+    """
+    From a list of transcript chunks,
+    create a list of dicts with voice_id,
+    text, and filepath fields.
+    """
+    generation_data = []
+    for ix, transcript_chunk in enumerate(transcript_chunks):
+        output_filepath = Path(output_dir / f"audio_chunk_{ix:03d}_{timestamp}.wav")
+        if ix == 0 or ix % 2 == 0:
+            voice_id = speaker_one_voice
+        else:
+            voice_id = speaker_two_voice
+        for text_string in transcript_chunk: 
+            generation_data.append(
+                {
+                    'voice_id': voice_id, 
+                    'text': text_string, 
+                    'filepath': str(output_filepath)
+                }
+            )
+    return generation_data
+
+def generate_audio_segments(
+    generation_data: list[dict],
+    tts_client: ElevenLabs,
+    model_id: str,
+    backup_filepath: Path
+):
+    """
+    Given a generation_data list of dicts with
+    text, voice_id, and filepath fields,
+    iterate over the data, generating audio segments.
+
+    Save audio segments to files.
+    """
+    request_ids = []
+    for ix, generation_datum in enumerate(generation_data):
+        text_string = generation_datum["text"]
+        voice_id = generation_datum["voice_id"]
+        output_filepath = Path(generation_datum["filepath"])
+        typer.echo(f"Generating audio chunk {ix+1} of {len(generation_data)}...")
+        request_id = generate_audio_with_timeout(
+            text=text_string,
+            voice_id=voice_id,
+            output_file=output_filepath,
+            tts_client=tts_client,
+            model_id=model_id,
+            previous_request_ids=request_ids[-1:] # previous 1 ID (we can include up to 3,
+                                                # but for our use case, 1 seems optimal, based 
+                                                # on some experimentation)
+        )
+        request_ids.append(request_id)
+        generation_data[ix]['request_id'] = request_id
+    write_backup_to_json_file(generation_data, backup_filepath)
+
+def regenerate_audio_segments(
+    data_to_regenerate: list[tuple[int, dict]],
+    tts_client: ElevenLabs,
+    model_id: str,
+    output_dir: Path,
+    timestamp: str
+):
+    """
+    Iterate over the regeneration data, generating audio segments.
+
+    data_to_regenerate tuples contain an integer representing the index
+    of the item the new segment will be replacing in the original
+    sequence of segments; the dict is the text, voice_id, and filepath
+
+    Save audio segments to files. Return lookup dict/map of new filepaths,
+    where fieldname is the index being replaced in the original sequence
+    of audio segments.
+    """
+    new_filepaths_lookup_map = {}
+    for ix, generation_datum_tuple in enumerate(data_to_regenerate):
+        original_segment_ix, generation_datum = generation_datum_tuple
+        text_string = generation_datum["text"]
+        voice_id = generation_datum["voice_id"]
+        try:
+            # find previous request id (that of preceding segment)
+            # among backup data
+            previous_request_id = (
+                data_to_regenerate[original_segment_ix-1][1]['request_id'] 
+                if original_segment_ix != 0 else ''
+            )
+        except:
+            previous_request_id = ''
+        output_filepath = Path(output_dir / f"audio_chunk_{original_segment_ix:03d}_{timestamp}.wav")
+        typer.echo(f"Generating audio chunk {ix+1} of {len(data_to_regenerate)}...")
+        generate_audio_with_timeout(
+            text=text_string,
+            voice_id=voice_id,
+            output_file=output_filepath,
+            tts_client=tts_client,
+            model_id=model_id,
+            previous_request_ids=[previous_request_id]
+        )
+        new_filepaths_lookup_map[original_segment_ix] = str(output_filepath)
+    return new_filepaths_lookup_map
 
 def dir_is_valid(
     path_to_dir: Path
@@ -993,7 +1018,98 @@ def execute_transcript_generation_workflow(
     )
     return transcript
 
+def execute_audio_generation_workflow(
+    transcript: str,
+    output_dir: Path,
+    timestamp: str,
+    speaker_one_voice: str,
+    speaker_two_voice: str,
+    tts_client: ElevenLabs,
+    tts_model: str,
+    backup_filepath: Path
+):
+    """
+    Workflow for generating the first pass 
+    of audio segments.
 
+    Return a list of filepaths to the audio segments
+    """
+    # chunk transcript
+    typer.echo("Chunking transcript. This may take a few minutes...")
+    transcript_chunks = create_speaker_text_chunks(transcript)
+    typer.echo(f"Transcript split into {len(transcript_chunks)} chunks.")
+
+    # create generation plan
+    generation_data = create_generation_data(
+        transcript_chunks,
+        output_dir,
+        timestamp,
+        speaker_one_voice,
+        speaker_two_voice
+    )
+    audio_chunk_filepaths = [x['filepath'] for x in generation_data]
+        
+    # generate audio
+    typer.echo(
+        "Generating audio from transcript chunks. "
+        "This could take a while..."
+    )
+    generate_audio_segments(generation_data, tts_client, tts_model, backup_filepath)
+
+    return audio_chunk_filepaths
+
+def execute_audio_regeneration_workflow(
+    backup_file_for_regen: Path,
+    tts_client: ElevenLabs,
+    tts_model: str,
+    timestamp: str
+):
+    """
+    Workflow for regenerating the selected 
+    audio segments.
+
+    Return (output_dir, audio_chunk_filepaths) 
+        audio_chunk_filepaths: list of filepaths to the newly generated audio segments
+        interspersed, where appropriate, among the original audio segments.
+    """
+    # get previous generation data
+    all_generation_data = read_backup_from_json_file(backup_file_for_regen)
+
+    # set output directory
+    output_dir = Path(all_generation_data[1]['filepath']).parent
+
+    # TODO: validate voice IDs
+    # TODO: validate segment filepaths
+
+    # user selects segments to regen
+    ix_of_items_to_regen = generate_menu(
+        [Path(x.get('filepath')).name for x in all_generation_data],
+        'Select audio segments to regenerate',
+        multi_select=True
+    )
+
+    if ix_of_items_to_regen is None:
+        typer.echo('Exiting.')
+        raise typer.Exit(0)
+
+    data_to_regenerate = [(i, all_generation_data[i]) for i in ix_of_items_to_regen]
+    
+    # regen segments
+    new_filepaths_lookup_map = regenerate_audio_segments(
+        data_to_regenerate, 
+        tts_client, 
+        tts_model, 
+        output_dir, 
+        timestamp
+    )
+    
+    # collect updated and original segment filepaths
+    audio_chunk_filepaths = [
+        new_filepaths_lookup_map.get(i, x['filepath']) 
+        for i, x in enumerate(all_generation_data)
+    ]
+
+    return output_dir, audio_chunk_filepaths
 
 
 
