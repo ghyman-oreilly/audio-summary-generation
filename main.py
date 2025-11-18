@@ -389,123 +389,145 @@ def generate(
             )
         ),
 ):
-        GEMINI_API_KEY = check_api_key(SERVICE_NAME, GEMINI_KEY_USER_NAME)
-        ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
+    _generate_audio_summary(
+        path_to_pdf,
+        output_dir,
+        text_summary_file,
+        transcript_file,
+        backup_file_for_regen,
+        speaker_one_voice,
+        speaker_two_voice
+    )
+    
+def _generate_audio_summary(
+    path_to_pdf: Path,
+    output_dir: Optional[Path] = None,
+    text_summary_file: Optional[Path] = None,
+    transcript_file: Optional[Path] = None,
+    backup_file_for_regen: Optional[Path] = None,
+    speaker_one_voice: str = DEFAULT_VOICE_TWO_ELEVENLABS,
+    speaker_two_voice: str = DEFAULT_VOICE_TWO_ELEVENLABS
+):
+    """
+    Script for generating an audio summary
+    """
+    GEMINI_API_KEY = check_api_key(SERVICE_NAME, GEMINI_KEY_USER_NAME)
+    ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
 
-        tts_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-        validate_voices(tts_client, speaker_one_voice, speaker_two_voice)
+    tts_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+    validate_voices(tts_client, speaker_one_voice, speaker_two_voice)
 
-        TEXT_MODEL = 'gemini-2.5-pro'
-        TTS_MODEL = 'eleven_multilingual_v2'
+    TEXT_MODEL = 'gemini-2.5-pro'
+    TTS_MODEL = 'eleven_multilingual_v2'
 
-        timestamp = int(time.time())
-        
-        if (
-            not path_to_pdf 
-            and not text_summary_file 
-            and not transcript_file
-            and not backup_file_for_regen
-        ):
-                typer.echo(
-                    "path_to_pdf required if not providing an existing "
-                    "text summary, transcript, or backup file. Exiting."
-                )
-                raise typer.Exit(1)
-
-        # check/config output directory
-        if output_dir and not backup_file_for_regen:
-            if not dir_is_valid(output_dir):
-                typer.echo("Output directory isn't valid. Exiting...")
-                raise typer.Exit(code=1)
-        else:
-            output_dir = Path.cwd()
-
-        backup_filepath = Path(output_dir / f"backup_{timestamp}.json")
-
-        # generate text summary
-        if (
-            path_to_pdf 
-            and not text_summary_file 
-            and not transcript_file
-            and not backup_file_for_regen
-        ):
-            text_summary = execute_pdf_workflow(path_to_pdf, output_dir, GEMINI_API_KEY, timestamp, TEXT_MODEL)
-
-        # handle existing/inputted text summary
-        if (
-            text_summary_file
-            and not transcript_file
-            and not backup_file_for_regen
-        ):
-            if not file_is_valid(text_summary_file, '.txt'):
-                typer.echo("Exiting...")
-                raise typer.Exit(code=1)
-            text_summary = read_text_from_file(text_summary_file)
-        
-        # generate transcript
-        if not transcript_file and not backup_file_for_regen:
-            transcript = execute_transcript_generation_workflow(
-                text_summary,
-                output_dir,
-                GEMINI_API_KEY,
-                TRANSCRIPT_SYS_INSTRUCTIONS,
-                timestamp,
-                TEXT_MODEL
+    timestamp = int(time.time())
+    
+    if (
+        not path_to_pdf 
+        and not text_summary_file 
+        and not transcript_file
+        and not backup_file_for_regen
+    ):
+            typer.echo(
+                "path_to_pdf required if not providing an existing "
+                "text summary, transcript, or backup file. Exiting."
             )
+            raise typer.Exit(1)
 
-        # handle existing/inputted transcript
-        if transcript_file and not backup_file_for_regen:
-            if not file_is_valid(transcript_file, '.txt'):
-                typer.echo("Exiting...")
-                raise typer.Exit(code=1)
-            transcript = read_text_from_file(transcript_file)
+    # check/config output directory
+    if output_dir and not backup_file_for_regen:
+        if not dir_is_valid(output_dir):
+            typer.echo("Output directory isn't valid. Exiting...")
+            raise typer.Exit(code=1)
+    else:
+        output_dir = Path.cwd()
 
-        # audio generation flows
-        if not backup_file_for_regen:
-            # first-pass generation use case
-            audio_chunk_filepaths = execute_audio_generation_workflow(
-                transcript,
-                output_dir,
-                timestamp,
-                speaker_one_voice,
-                speaker_two_voice,
-                tts_client,
-                TTS_MODEL,
-                backup_filepath
-            )
-        else:
-            # segment(s) regeneration use case
-            if not file_is_valid(backup_file_for_regen, '.json'):
-                typer.echo("Exiting...")
-                raise typer.Exit(code=1)
+    backup_filepath = Path(output_dir / f"backup_{timestamp}.json")
 
-            output_dir, audio_chunk_filepaths = execute_audio_regeneration_workflow(
-                backup_file_for_regen,
-                tts_client,
-                TTS_MODEL,
-                timestamp
-            )
+    # generate text summary
+    if (
+        path_to_pdf 
+        and not text_summary_file 
+        and not transcript_file
+        and not backup_file_for_regen
+    ):
+        text_summary = execute_pdf_workflow(path_to_pdf, output_dir, GEMINI_API_KEY, timestamp, TEXT_MODEL)
 
-        # combine chunk audio files
-        typer.echo("Combining audio chunk files...")
-        combined_audio_filepath = Path(output_dir / f"combined_audio_{timestamp}.wav")
-        combine_wav_files(audio_chunk_filepaths, combined_audio_filepath)
-        typer.echo(f"Combined audio saved to {str(combined_audio_filepath)}")
-
-        save_audio_chunks = typer.confirm(
-            (
-                "Do you wish to save the partial audio chunks?\n "
-                "Choose Yes (default) if you wish to save them, in case "
-                "they some segments must be regenerated later. "
-                "Otherwise, select No to delete the segments."
-            ),
-            default=True
+    # handle existing/inputted text summary
+    if (
+        text_summary_file
+        and not transcript_file
+        and not backup_file_for_regen
+    ):
+        if not file_is_valid(text_summary_file, '.txt'):
+            typer.echo("Exiting...")
+            raise typer.Exit(code=1)
+        text_summary = read_text_from_file(text_summary_file)
+    
+    # generate transcript
+    if not transcript_file and not backup_file_for_regen:
+        transcript = execute_transcript_generation_workflow(
+            text_summary,
+            output_dir,
+            GEMINI_API_KEY,
+            TRANSCRIPT_SYS_INSTRUCTIONS,
+            timestamp,
+            TEXT_MODEL
         )
 
-        if not save_audio_chunks:
-            delete_files(audio_chunk_filepaths)
+    # handle existing/inputted transcript
+    if transcript_file and not backup_file_for_regen:
+        if not file_is_valid(transcript_file, '.txt'):
+            typer.echo("Exiting...")
+            raise typer.Exit(code=1)
+        transcript = read_text_from_file(transcript_file)
 
-        typer.echo("Scripted completed.")
+    # audio generation flows
+    if not backup_file_for_regen:
+        # first-pass generation use case
+        audio_chunk_filepaths = execute_audio_generation_workflow(
+            transcript,
+            output_dir,
+            timestamp,
+            speaker_one_voice,
+            speaker_two_voice,
+            tts_client,
+            TTS_MODEL,
+            backup_filepath
+        )
+    else:
+        # segment(s) regeneration use case
+        if not file_is_valid(backup_file_for_regen, '.json'):
+            typer.echo("Exiting...")
+            raise typer.Exit(code=1)
+
+        output_dir, audio_chunk_filepaths = execute_audio_regeneration_workflow(
+            backup_file_for_regen,
+            tts_client,
+            TTS_MODEL,
+            timestamp
+        )
+
+    # combine chunk audio files
+    typer.echo("Combining audio chunk files...")
+    combined_audio_filepath = Path(output_dir / f"combined_audio_{timestamp}.wav")
+    combine_wav_files(audio_chunk_filepaths, combined_audio_filepath)
+    typer.echo(f"Combined audio saved to {str(combined_audio_filepath)}")
+
+    save_audio_chunks = typer.confirm(
+        (
+            "Do you wish to save the partial audio chunks?\n "
+            "Choose Yes (default) if you wish to save them, in case "
+            "they some segments must be regenerated later. "
+            "Otherwise, select No to delete the segments."
+        ),
+        default=True
+    )
+
+    if not save_audio_chunks:
+        delete_files(audio_chunk_filepaths)
+
+    typer.echo("Scripted completed.")
 
 def create_generation_data(
         transcript_chunks: list[str],
