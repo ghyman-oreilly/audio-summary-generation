@@ -253,66 +253,84 @@ def add_elevenlabs_voice(
 ):
     ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
     client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-    current_page = 0
-    continue_paging = True
-    voice_found = False
 
     # validate CLI params
     if not voice_id or not custom_name:
         typer.echo(f"Voice ID and Custom Name params must have valid values. Exiting.")
         raise typer.Exit(code=1)
 
-    # TODO: break out these chunks of logic/flow into separate functions?
-
-    # check if voice already exists in user library
-    try:
-        client.voices.get(voice_id=voice_id)
-        voice_found = True
-    except Exception as e:
-        if 'voice_not_found' in str(e):
-            # expected result
-            pass
-        else:
-            # Handle all other unexpected errors
-            raise e
-
-    if voice_found:
+    # check for voice in user library
+    if voice_exists_in_account_library(voice_id, client):
         typer.echo(f"Shared voice already exists in user library. Exiting.")
         raise typer.Exit(code=1) 
 
-    voice_found = False
-    owner_id = None
-
     # check for shared voice in community library
-    typer.echo(f"Searching for voice in community library...")
-    while continue_paging:
-        some_shared_voices = client.voices.get_shared(page_size=100, page=current_page)
-        if some_shared_voices.voices:
-            for voice in some_shared_voices.voices:
-                if voice.voice_id == voice_id:
-                    voice_found = True
-                    owner_id = voice.public_owner_id
-                    break
-            if voice_found:
-                break
-            if not some_shared_voices.has_more:
-                continue_paging = False
-        current_page += 1
-        time.sleep(0.5)
+    # and get owner ID
+    typer.echo(
+        (
+            "Searching for voice in community library. Please be patient, "
+            "as this may take several minutes..."
+        )
+    )
+    voice_owner_id = get_voice_owner_id_from_community_library(voice_id, client)
 
-    if not voice_found:
+    if not voice_owner_id:
         typer.echo(f"Shared voice matching ID {voice_id} not found. Exiting.")
         raise typer.Exit(code=1)
 
     # add voice to user library
     client.voices.share(
-        public_user_id=owner_id,
+        public_user_id=voice_owner_id,
         voice_id=voice_id,
         new_name=custom_name
     )
 
     typer.echo(f"Shared voice matching ID {voice_id} added to user library.")
     typer.echo(f"Script complete.")
+
+def voice_exists_in_account_library(
+    voice_id: str,
+    client: ElevenLabs
+):
+    """
+    Check whether voice (by ID) already
+    exists in ElevenLabs account library.
+    """
+    try:
+        client.voices.get(voice_id=voice_id)
+        return True
+    except Exception as e:
+        if 'voice_not_found' in str(e):
+            # expected result
+            return False
+        else:
+            # Handle all other unexpected errors
+            raise e
+
+def get_voice_owner_id_from_community_library(
+    voice_id: str,
+    client: ElevenLabs
+):
+    """
+    Check whether voice (by ID) exists
+    in the ElevenLabs community library.
+
+    Return owner ID (required for adding voice to user library) or None.
+    """
+    current_page = 0
+    continue_paging = True
+    while continue_paging:
+        some_shared_voices = client.voices.get_shared(page_size=100, page=current_page)
+        if some_shared_voices.voices:
+            for voice in some_shared_voices.voices:
+                if voice.voice_id == voice_id:
+                    owner_id = voice.public_owner_id
+                    return owner_id
+            if not some_shared_voices.has_more:
+                continue_paging = False
+        current_page += 1
+        time.sleep(0.5)
+    return None
 
 @app.command(
     help="""
