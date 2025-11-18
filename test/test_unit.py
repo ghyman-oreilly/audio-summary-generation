@@ -469,7 +469,7 @@ def test_check_api_key(key_value, force_prompt):
             mock_prompt.assert_called_once()
             mock_set.assert_called_once_with(service_name, username, "new_api_key")
 
-def test_valid_voices_success(mock_elevenlabs_client):
+def test_validate_voices_success(mock_elevenlabs_client):
     """
     Unit test for validate_voices
     Test case where both voices are valid.
@@ -486,7 +486,7 @@ def test_valid_voices_success(mock_elevenlabs_client):
     assert mock_elevenlabs_client.voices.get.call_count == 2
 
 
-def test_same_voice_ids_exit(mock_elevenlabs_client):
+def test_validate_voices_same_voice_ids_exit(mock_elevenlabs_client):
     """
     Unit test for validate_voices
     Test case where speaker_one_voice and speaker_two_voice are the same.
@@ -501,7 +501,7 @@ def test_same_voice_ids_exit(mock_elevenlabs_client):
     mock_elevenlabs_client.voices.get.assert_not_called()
 
 
-def test_speaker_one_invalid_exit(mock_elevenlabs_client):
+def test_validate_voices_speaker_one_invalid_exit(mock_elevenlabs_client):
     """
     Unit test for validate_voices
     Test case where speaker_one_voice is invalid (raises exception).
@@ -525,7 +525,7 @@ def test_speaker_one_invalid_exit(mock_elevenlabs_client):
     assert mock_elevenlabs_client.voices.get.call_count == 2
 
 
-def test_speaker_two_invalid_exit(mock_elevenlabs_client):
+def test_validate_voices_speaker_two_invalid_exit(mock_elevenlabs_client):
     """
     Unit test for validate_voices
     Test case where speaker_two_voice is invalid (raises exception).
@@ -549,7 +549,7 @@ def test_speaker_two_invalid_exit(mock_elevenlabs_client):
     assert mock_elevenlabs_client.voices.get.call_count == 2
 
 
-def test_both_invalid_exit(mock_elevenlabs_client):
+def test_validate_voices_both_invalid_exit(mock_elevenlabs_client):
     """
     Unit test for validate_voices
     Test case where both voices are invalid (both raise exceptions).
@@ -618,3 +618,77 @@ def test_execute_transcript_generation_workflow(output_dir, api_key):
         )
         assert actual_transcript == expected_transcript
         mock_write.assert_called_once()
+
+# TODO: organize unit tests for separate commands. Same with E2E tests.
+
+def test_write_backup_to_json_file():
+    # TODO: write test
+    pass
+
+def test_read_backup_from_json_file():
+    # TODO: write test
+    pass
+
+def test_validate_backup_data():
+    # TODO: write test
+    pass
+
+def test_validate_backup_data_voice_ids():
+    # TODO: write test
+    pass
+
+def test_validate_backup_data_segment_filepaths():
+    # TODO: write test
+    pass
+
+def test_validate_backup_data_shape():
+    # TODO: write test
+    pass
+
+def test_generate_menu():
+    # TODO: write test
+    pass
+
+def test_check_tokenizer_data_availability():
+    # TODO: write test
+    pass
+
+def test_add_elevenlabs_voice():
+    # TODO: write test
+    pass
+
+def test_voice_exists_in_account_library():
+    # TODO: write test
+    pass
+
+def test_get_voice_owner_id_from_community_library():
+    # TODO: write test
+    pass
+
+def test_create_generation_data():
+    # TODO: write test
+    pass
+
+def test_regenerate_audio_segments():
+    # TODO: write test
+    pass
+
+def test_chunk_segment_by_sentences():
+    # TODO: write test
+    pass
+
+def test_generate_audio_chunk_from_chunk():
+    # TODO: write test
+    pass
+
+def test_jitter_wait():
+    # TODO: write test
+    pass
+
+def test_execute_audio_generation_workflow():
+    # TODO: write test
+    pass
+
+def test_execute_audio_regeneration_workflow():
+    # TODO: write test
+    pass

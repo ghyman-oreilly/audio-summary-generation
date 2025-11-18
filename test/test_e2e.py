@@ -178,3 +178,28 @@ def test_generate_audio_summary_pdf_only_e2e(
     
     # Check that delete_files was called because mock_confirm[2] was False
     mock_delete_files.assert_called_once()
+
+
+def test_generate_audio_summary_provide_summary():
+    # TODO: write test
+    pass
+
+def test_generate_audio_summary_provide_transcript():
+    # TODO: write test
+    pass
+
+def test_generate_audio_summary_select_voices():
+    # TODO: write test
+    pass
+
+def test_generate_audio_summary_provide_backup_file():
+    # TODO: write test
+    pass
+
+def test_combine_audio_files():
+    # TODO: write test
+    pass
+
+def test_add_elevenlabs_voice():
+    # TODO: write test
+    pass
