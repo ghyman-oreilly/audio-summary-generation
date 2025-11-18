@@ -30,25 +30,30 @@ def write_backup_to_json_file(
 
 def read_backup_from_json_file(
     input_filepath: Union[str, Path],
-    tts_client: ElevenLabs
+    tts_client: Optional[ElevenLabs] = None,
+    validate_voices: bool = True,
+    expected_fields: List[str] = ['voice_id', 'text', 'filepath', 'request_id']
 ):
     """
     Read JSON file and and validate data.
     """
     with open(str(input_filepath), "r") as f:
         data = json.load(f)
-        validate_backup_data(data, tts_client)
+        validate_backup_data(data, tts_client, validate_voices, expected_fields)
         return data
 
 def validate_backup_data(
         data: List[dict],
-        tts_client: ElevenLabs
+        tts_client: Optional[ElevenLabs] = None,
+        validate_voices: bool = True,
+        expected_fields: List[str] = ['voice_id', 'text', 'filepath', 'request_id']
     ):
     """
     Wrapper for backup data validation steps
     """
-    validate_backup_data_shape(data)
-    validate_backup_data_voice_ids(data, tts_client)
+    validate_backup_data_shape(data, expected_fields)
+    if validate_voices:
+        validate_backup_data_voice_ids(data, tts_client)
     validate_backup_data_segment_filepaths(data)
 
 def validate_backup_data_voice_ids(
@@ -80,7 +85,7 @@ def validate_backup_data_segment_filepaths(data: List[dict]):
     invalid_filepaths = [str(x) for x in filepaths if not file_is_valid(x, '.wav')]
     invalid_filepaths_str = '\n'.join(invalid_filepaths)
 
-    if invalid_filepaths is not None:
+    if invalid_filepaths:
         typer.echo(
             (
                 f"One or more filepaths in backup data is invalid:\n"
@@ -169,33 +174,66 @@ ELEVENLABS_KEY_USER_NAME = "elevenlabs_api_key"
     """
 )
 def combine_audio_files(
-    input_files: List[Path],
+    input_files: Optional[List[Path]] = typer.Argument(
+        None, help=(
+            "Provide comma-delimited list of segment WAV files "
+            "to combine. Argument not required if a valid backup "
+            "JSON file is provided using the XX option."
+        )
+    ),
     output_dir: Optional[Path] = typer.Option(
     None, help=(
             "Provide directory where combine output audio file should be saved. "
             "Defaults to current working directory."
         )
     ),
+    backup_file: Optional[Path] = typer.Option(
+        None, help=(
+            "Provide path to JSON file containing backup data. "
+            "If providing this text file, the input_files argument "
+            "doesn't need to be provided. Any output_filepath argument will be ignored, as the "
+            "directory containing the previously generated audio files will be used."
+        )
+    ),
 ):
     timestamp = int(time.time())
-    
-    # validate input files
-    if not input_files or len(input_files) < 2:
-        typer.echo("Two or more input files are required. Exiting...")
-        raise typer.Exit(code=1) 
-    
-    for input_file in input_files:
-        if not file_is_valid(input_file, '.wav', 20):
-            typer.echo(f"Input file {input_file} isn't valid. Exiting...")
+
+    # input_files list use case    
+    if not backup_file:
+        # validate input files
+        if not input_files or len(input_files) < 2:
+            typer.echo("Two or more input files are required. Exiting...")
             raise typer.Exit(code=1) 
-    
-    # check/config output directory
-    if output_dir:
-        if not dir_is_valid(output_dir):
-            typer.echo("Output directory isn't valid. Exiting...")
-            raise typer.Exit(code=1)
+        
+        for input_file in input_files:
+            if not file_is_valid(input_file, '.wav', 20):
+                typer.echo(f"Input file {input_file} isn't valid. Exiting...")
+                raise typer.Exit(code=1) 
+        
+        # check/config output directory
+        if output_dir:
+            if not dir_is_valid(output_dir):
+                typer.echo("Output directory isn't valid. Exiting...")
+                raise typer.Exit(code=1)
+        else:
+            output_dir = Path.cwd()
+    # backup_file use case
     else:
-        output_dir = Path.cwd()
+        # validate backup file
+        if not file_is_valid(backup_file, '.json'):
+            typer.echo("Exiting...")
+            raise typer.Exit(code=1)
+        
+        # get filepaths
+        backup_data = read_backup_from_json_file(
+            backup_file, 
+            validate_voices=False, 
+            expected_fields=['filepath']
+        )
+        input_files = [x['filepath'] for x in backup_data]
+
+        # set output directory
+        output_dir = Path(input_files[1]).parent
 
     combined_audio_filepath = Path(output_dir / f"combined_audio_{timestamp}.wav")
     combine_wav_files(input_files, combined_audio_filepath)
