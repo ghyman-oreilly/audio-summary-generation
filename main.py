@@ -28,16 +28,68 @@ def write_backup_to_json_file(
     with open(str(output_filepath), "w") as f:
         json.dump(input_data, f)
 
-def read_backup_from_json_file(input_filepath: Union[str, Path]):
+def read_backup_from_json_file(
+    input_filepath: Union[str, Path],
+    tts_client: ElevenLabs
+):
     """
     Read JSON file and and validate data.
     """
     with open(str(input_filepath), "r") as f:
         data = json.load(f)
-        validate_backup_data(data)
+        validate_backup_data(data, tts_client)
         return data
 
 def validate_backup_data(
+        data: List[dict],
+        tts_client: ElevenLabs
+    ):
+    """
+    Wrapper for backup data validation steps
+    """
+    validate_backup_data_shape(data)
+    validate_backup_data_voice_ids(data, tts_client)
+    validate_backup_data_segment_filepaths(data)
+
+def validate_backup_data_voice_ids(
+        data: List[dict],
+        tts_client: ElevenLabs
+    ):
+    """
+    Validate voice IDs in backup data
+    """
+    voice_ids = list(set([x['voice_id'] for x in data]))
+
+    if len(voice_ids) != 2:
+        typer.echo(
+            (
+                "Backup data must contain exactly two unique voice IDs "
+                "(duplicates are okay). Exiting."
+            )
+        )
+        raise typer.Exit(1)
+
+    validate_voices_elevenlabs(tts_client, voice_ids[0], voice_ids[1])
+
+
+def validate_backup_data_segment_filepaths(data: List[dict]):
+    """
+    Validate filepaths in backup data
+    """
+    filepaths = [Path(x['filepath']) for x in data]
+    invalid_filepaths = [str(x) for x in filepaths if not file_is_valid(x, '.wav')]
+    invalid_filepaths_str = '\n'.join(invalid_filepaths)
+
+    if invalid_filepaths is not None:
+        typer.echo(
+            (
+                f"One or more filepaths in backup data is invalid:\n"
+                f"\n{invalid_filepaths_str}\n\nExiting."
+             )
+        )
+        raise typer.Exit(1)
+
+def validate_backup_data_shape(
     json_data: List[dict],
     expected_fields: List[str] = ['voice_id', 'text', 'filepath', 'request_id']
 ):
@@ -808,9 +860,6 @@ def generate_audio_chunk_from_chunk(
         typer.echo("Max retries exceeded. Exiting.")
         raise typer.Exit(1)   
     
-
-
-
 def jitter_wait(delay: float, attempt: int, e: Exception = None):
     """
     Set wait time and sleep
@@ -1063,7 +1112,7 @@ def execute_audio_regeneration_workflow(
     tts_client: ElevenLabs,
     tts_model: str,
     timestamp: str
-):
+) -> tuple[Path, list[Path]]:
     """
     Workflow for regenerating the selected 
     audio segments.
@@ -1073,13 +1122,10 @@ def execute_audio_regeneration_workflow(
         interspersed, where appropriate, among the original audio segments.
     """
     # get previous generation data
-    all_generation_data = read_backup_from_json_file(backup_file_for_regen)
+    all_generation_data = read_backup_from_json_file(backup_file_for_regen, tts_client)
 
     # set output directory
     output_dir = Path(all_generation_data[1]['filepath']).parent
-
-    # TODO: validate voice IDs
-    # TODO: validate segment filepaths
 
     # user selects segments to regen
     ix_of_items_to_regen = generate_menu(
@@ -1088,10 +1134,12 @@ def execute_audio_regeneration_workflow(
         multi_select=True
     )
 
+    # exit in case of, e.g., Ctrl + C
     if ix_of_items_to_regen is None:
         typer.echo('Exiting.')
         raise typer.Exit(0)
 
+    # select original data of items to regenerate, by index
     data_to_regenerate = [(i, all_generation_data[i]) for i in ix_of_items_to_regen]
     
     # regen segments
