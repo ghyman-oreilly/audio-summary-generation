@@ -74,7 +74,7 @@ def validate_backup_data_voice_ids(
         )
         raise typer.Exit(1)
 
-    validate_voices_elevenlabs(tts_client, voice_ids[0], voice_ids[1])
+    validate_voices(tts_client, voice_ids[0], voice_ids[1])
 
 
 def validate_backup_data_segment_filepaths(data: List[dict]):
@@ -384,7 +384,7 @@ def generate(
             DEFAULT_VOICE_TWO_ELEVENLABS,
             help=(
                 f"Enter an ElevenLabs voice ID. "
-                f"Be sure to select a different voice from you chose for speaker one! "
+                f"Be sure to select a different voice than you chose for speaker one! "
                 f"Default: {DEFAULT_VOICE_TWO_ELEVENLABS}."
             )
         ),
@@ -393,7 +393,7 @@ def generate(
         ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
 
         tts_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-        validate_voices_elevenlabs(tts_client, speaker_one_voice, speaker_two_voice)
+        validate_voices(tts_client, speaker_one_voice, speaker_two_voice)
 
         TEXT_MODEL = 'gemini-2.5-pro'
         TTS_MODEL = 'eleven_multilingual_v2'
@@ -1032,7 +1032,7 @@ def check_api_key(
     return api_key
 
 
-def validate_voices_elevenlabs(
+def validate_voices(
     client: ElevenLabs,
     speaker_one_voice: str,
     speaker_two_voice: str
@@ -1046,6 +1046,10 @@ def validate_voices_elevenlabs(
     """
     voice_one_invalid = False
     voice_two_invalid = False
+
+    if speaker_one_voice == speaker_two_voice:
+        typer.echo("Unique IDs are required for speaker_one_voice and speaker_two_voice.")
+        raise typer.Exit(1)
 
     try:
         voice_one_result = client.voices.get(voice_id=speaker_one_voice)

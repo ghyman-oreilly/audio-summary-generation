@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from conftest import DummyAudioResponse, DummyTextResponse
-from main import DEFAULT_SPEAKER_ONE_LABEL, DEFAULT_SPEAKER_TWO_LABEL, generate_audio_summary
+from main import generate
 
 class DummyTokenCountResponse:
     def __init__(self, total_tokens):
@@ -22,7 +22,7 @@ def typer_confirm_mock():
     with patch('main.typer.confirm', return_value=True) as typer_confirm_mock:
         yield typer_confirm_mock
 
-def test_generate_audio_summary(
+def test_generate(
     input_pdf,
     output_dir,
     check_api_mock,
@@ -40,8 +40,8 @@ def test_generate_audio_summary(
     test_input_wav_filepath = 'test/test_data/hello.wav'
     text_summary = "This is my text summary"
     transcript_text = (
-        f"{DEFAULT_SPEAKER_ONE_LABEL}: That's a great text right there.\n"
-        f"{DEFAULT_SPEAKER_TWO_LABEL}: It sure is!"
+        "That's a great text right there.\n\n"
+        "It sure is!"
     )
     input_audio_data = wav_file_data(test_input_wav_filepath).get('audio_data')
 
@@ -55,7 +55,7 @@ def test_generate_audio_summary(
     ]
 
     with patch("main.genai.Client", return_value=mock_client):
-        generate_audio_summary(input_pdf, output_dir)
+        generate(input_pdf, output_dir)
         summary_files = list(output_dir.glob("text_summary_*.txt"))
         transcript_files = list(output_dir.glob("transcript_*.txt"))
         audio_files = list(output_dir.glob("combined_audio_*.wav"))
