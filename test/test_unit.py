@@ -4,7 +4,7 @@ import pytest
 import random
 import tempfile
 import typer
-from unittest.mock import MagicMock, patch
+from unittest.mock import call, MagicMock, patch
 import wave
 
 from conftest import MINIMAL_FILE_CONTENT
@@ -43,14 +43,13 @@ def api_key():
 
 class ElevenLabs:
     # A simplified stand-in for the ElevenLabs client
-    def __init__(self):
-        self.voices = MagicMock()
+    pass
 
 @pytest.fixture
-def mock_voice_client():
+def mock_elevenlabs_client():
     """Fixture to provide a mocked ElevenLabs client."""
     client = MagicMock(spec=ElevenLabs)
-    # Ensure client.voices.get is a mock object
+    client.voices = MagicMock()
     client.voices.get = MagicMock()
     return client
 
@@ -121,17 +120,6 @@ def test_read_text_from_file(dummy_file):
     path_to_file = str(dummy_file('txt'))
     assert read_text_from_file(path_to_file) == MINIMAL_FILE_CONTENT.get('txt').decode()
 
-# Mock implementation of the helper function (must be defined in the same scope for patching)
-# NOTE: In a real environment, you'd patch where the function is imported (e.g., 'your_module.chunk_segment_by_sentences')
-def chunk_segment_by_sentences(line, char_limit):
-    # This mock always splits a long line into three smaller chunks
-    return [
-        f"Chunk 1 of {len(line)}",
-        f"Chunk 2 of {len(line)}",
-        f"Chunk 3 of {len(line)}",
-    ]
-
-@patch('main.chunk_segment_by_sentences', side_effect=chunk_segment_by_sentences)
 @pytest.mark.parametrize(
     "text_input, char_limit, expected_speaker_turns, expected_total_chunks",
     [
@@ -162,7 +150,6 @@ def chunk_segment_by_sentences(line, char_limit):
     ],
 )
 def test_create_speaker_text_chunks(
-    mock_split_func, # The mocked function (must be the first argument after patching)
     text_input,
     char_limit,
     expected_speaker_turns,
@@ -170,56 +157,193 @@ def test_create_speaker_text_chunks(
 ):
     """Tests the new structure and splitting logic of create_speaker_text_chunks."""
 
-    chunked_strings = create_speaker_text_chunks(text_input, char_limit)
-  
-    # Assert the number of speaker turns (outer list length)
-    assert len(chunked_strings) == expected_speaker_turns, \
-        "The number of speaker turns (lines) does not match expected count."
+    def chunk_segment_by_sentences(line, char_limit):
+        """
+        Mock implementation of the helper function chunk_segment_by_sentences
+        """
+        # This mock always splits a long line into three smaller chunks
+        return [
+            f"Chunk 1 of {len(line)}",
+            f"Chunk 2 of {len(line)}",
+            f"Chunk 3 of {len(line)}",
+        ]
 
-    # Assert the total number of audio chunks (sum of inner list lengths)
-    total_chunks = sum(len(sublist) for sublist in chunked_strings)
-    assert total_chunks == expected_total_chunks, \
-        "The total number of resulting audio chunks does not match expected count."
+    with patch(
+        'main.chunk_segment_by_sentences', 
+        side_effect=chunk_segment_by_sentences
+        ) as mock_split_func:
 
-    # Assert the structure and content quality
-    for speaker_turn in chunked_strings:
-        # Each speaker turn must be a list
-        assert isinstance(speaker_turn, list), \
-            "Each speaker turn must be a list (the sub-list)."
-        
-        for chunk in speaker_turn:
-            # Each chunk must be a non-empty string
-            assert isinstance(chunk, str)
-            assert len(chunk) > 0
+        chunked_strings = create_speaker_text_chunks(text_input, char_limit)
+    
+        # Assert the number of speaker turns (outer list length)
+        assert len(chunked_strings) == expected_speaker_turns, \
+            "The number of speaker turns (lines) does not match expected count."
+
+        # Assert the total number of audio chunks (sum of inner list lengths)
+        total_chunks = sum(len(sublist) for sublist in chunked_strings)
+        assert total_chunks == expected_total_chunks, \
+            "The total number of resulting audio chunks does not match expected count."
+
+        # Assert the structure and content quality
+        for speaker_turn in chunked_strings:
+            # Each speaker turn must be a list
+            assert isinstance(speaker_turn, list), \
+                "Each speaker turn must be a list (the sub-list)."
             
-    # Check if the mock was called the correct number of times (only in "mixed_split_small_limit")
-    if expected_total_chunks > expected_speaker_turns:
-        mock_split_func.assert_called_once()
-    else:
-        # For tests where no splitting occurs, the mock shouldn't be called
-        mock_split_func.assert_not_called()
+            for chunk in speaker_turn:
+                # Each chunk must be a non-empty string
+                assert isinstance(chunk, str)
+                assert len(chunk) > 0
+                
+        # Check if the mock was called the correct number of times (only in "mixed_split_small_limit")
+        if expected_total_chunks > expected_speaker_turns:
+            mock_split_func.assert_called_once()
+        else:
+            # For tests where no splitting occurs, the mock shouldn't be called
+            mock_split_func.assert_not_called()
 
-def test_generate_audio_segments(output_dir, api_key):
-    text_chunks = ["hello", "world"]
-    timestamp = 123456
-    expected_filepath_one = Path(output_dir / f'audio_chunk_000_{timestamp}.wav')
-    expected_filepath_two = Path(output_dir / f'audio_chunk_001_{timestamp}.wav')
-    with patch('main.generate_audio_with_timeout', return_value=None):
-        audio_chunk_filepaths = generate_audio_segments(text_chunks, timestamp, output_dir, api_key)
-        assert len(audio_chunk_filepaths) == 2
-        assert audio_chunk_filepaths[0] == expected_filepath_one
-        assert audio_chunk_filepaths[1] == expected_filepath_two
+def test_generate_audio_segments(mock_elevenlabs_client):
+    """
+    Unit test against generate_audio_segments 
+    """
+    generation_data = [
+        {'voice_id': 'my_vid_1', 'text': 'hello', 'filepath': 'my_filepath1'}, 
+        {'voice_id': 'my_vid_2', 'text': 'world', 'filepath': 'my_filepath2'}
+    ]
+    mock_return_values = [
+        'request_id_0', 
+        'request_id_1'
+    ]
+    expected_data_for_backup = [
+        {'voice_id': 'my_vid_1', 'text': 'hello', 'filepath': 'my_filepath1', 'request_id': 'request_id_0'}, 
+        {'voice_id': 'my_vid_2', 'text': 'world', 'filepath': 'my_filepath2', 'request_id': 'request_id_1'}
+    ]
+    fake_backup_filepath = Path('fake_path')
+    model_id = 'some_model'
 
-def test_generate_audio_with_timeout(audio_output_filepath, wav_file_data, genai_client_mock, api_key):
-    _, _, set_expected_response = genai_client_mock
-    text = "Hello"
-    output_filepath = audio_output_filepath
-    input_filepath = 'test/test_data/chunk_audio_00.wav'
-    expected_response = wav_file_data(input_filepath).get('audio_data')
-    set_expected_response(expected_response, is_audio_generation=True)
-    generate_audio_with_timeout(text, output_filepath, api_key)
-    output_wav_data = wav_file_data(output_filepath).get('audio_data')
-    assert expected_response == output_wav_data
+    with (
+        patch('main.generate_audio_with_timeout', side_effect=mock_return_values) as mock_gen,
+        patch('main.write_backup_to_json_file') as mock_backup
+    ):
+        generate_audio_segments(
+            generation_data, 
+            mock_elevenlabs_client, 
+            model_id=model_id,
+            backup_filepath=fake_backup_filepath
+        )
+        
+        # generate_audio_with_timeout should be called once for each item in the data (2 times)
+        mock_gen.call_count == 2
+        
+        # write_backup_to_json_file should be called exactly once
+        mock_backup.assert_called_once()
+                
+        # The expected calls for generate_audio_with_timeout, including previous_request_ids
+        expected_calls = [
+            call(
+                text='hello',
+                voice_id='my_vid_1',
+                output_file=Path('my_filepath1'),
+                tts_client=mock_elevenlabs_client,
+                model_id=model_id,
+                previous_request_ids=[]
+            ),
+            call(
+                text='world',
+                voice_id='my_vid_2',
+                output_file=Path('my_filepath2'),
+                tts_client=mock_elevenlabs_client,
+                model_id=model_id,
+                previous_request_ids=['request_id_0']
+            )
+        ]
+        
+        mock_gen.assert_has_calls(expected_calls, any_order=False)
+
+        # Check that the mock_backup was called with the modified data
+        mock_backup.assert_called_once_with(
+            expected_data_for_backup, 
+            fake_backup_filepath
+        )
+
+def test_generate_audio_with_timeout_succeeds(mock_elevenlabs_client):
+    """
+    Unit test against generate_audio_with_timeout
+    """
+    expected_request_id = "successful_request_id_123"
+
+    with (
+        patch(
+            'main.generate_audio_chunk_from_chunk', 
+            return_value=expected_request_id
+        ) as mock_chunk_gen
+    ):
+
+        request_id = generate_audio_with_timeout(
+                    text="Test text",
+                    voice_id="test_voice",
+                    output_file=Path("test_output.mp3"),
+                    tts_client=mock_elevenlabs_client,
+                    model_id="test_model",
+                    previous_request_ids=["prev_id"]
+                )
+        
+        assert request_id == expected_request_id
+
+        mock_chunk_gen.assert_called_once_with(
+                text="Test text",
+                voice_id="test_voice",
+                output_file=Path("test_output.mp3"),
+                tts_client=mock_elevenlabs_client,
+                model_id="test_model",
+                previous_request_ids=["prev_id"]
+            )
+
+def test_generate_audio_with_timeout_timeout_logic_works(mock_elevenlabs_client):
+    """
+    Tests that the correct timeout value is passed and the TimeoutError is handled.
+    """
+    TEST_TIMEOUT = 5.0
+
+    #  Mock the Future object (where the exception is forced)
+    mock_future = MagicMock()
+    mock_future.result.side_effect = TimeoutError 
+
+    # Mock the Executor instance (The object bound to 'as executor')
+    # This mock represents the *active* executor inside the 'with' block.
+    mock_executor_instance = MagicMock()
+    mock_executor_instance.submit.return_value = mock_future
+
+    # Mock the ThreadPoolExecutor class
+    mock_executor_class = MagicMock()
+
+    # This links the class mock to the instance mock correctly.
+    # When the code runs TPE(), it returns a mock object.
+    # When the code runs with ... as executor:, it calls __enter__ on that mock object.
+    # We tell __enter__ to return our mock_executor_instance.
+    mock_executor_class.return_value.__enter__.return_value = mock_executor_instance
+
+    # Patch the function being executed and the executor class
+    with (
+        patch('main.generate_audio_chunk_from_chunk'),
+        # Ensure this patch path is correct!
+        patch('main.ThreadPoolExecutor', new=mock_executor_class)
+    ):
+        
+        with pytest.raises(typer.Exit) as excinfo:
+            generate_audio_with_timeout(
+                text="Test timeout",
+                voice_id="test_voice",
+                output_file=Path("test_output.mp3"),
+                tts_client=mock_elevenlabs_client,
+                model_id="test_model",
+                timeout=TEST_TIMEOUT, 
+                previous_request_ids=[]
+            )
+        
+        assert excinfo.value.exit_code == 1
+        mock_future.result.assert_called_once_with(timeout=TEST_TIMEOUT)
+        mock_executor_instance.submit.assert_called_once()
 
 def test_write_audio_data_to_wav_file(wav_file_data, audio_output_filepath):  
     input_filepath = 'test/test_data/chunk_audio_00.wav'
@@ -345,25 +469,24 @@ def test_check_api_key(key_value, force_prompt):
             mock_prompt.assert_called_once()
             mock_set.assert_called_once_with(service_name, username, "new_api_key")
 
-def test_valid_voices_success(mock_voice_client):
+def test_valid_voices_success(mock_elevenlabs_client):
     """
     Unit test for validate_voices
     Test case where both voices are valid.
     """
+    # Set return values for the mocked API calls
+    mock_elevenlabs_client.voices.get.return_value = "VoiceObject" 
     
-    # Arrange: Set return values for the mocked API calls
-    mock_voice_client.voices.get.return_value = "VoiceObject" 
+    # Call the function with distinct valid voice IDs
+    validate_voices(mock_elevenlabs_client, "voice_A_id", "voice_B_id")
     
-    # Act: Call the function with distinct valid voice IDs
-    validate_voices(mock_voice_client, "voice_A_id", "voice_B_id")
-    
-    # Assert: Check that the API was called for both voices and no exception was raised
-    mock_voice_client.voices.get.assert_any_call(voice_id="voice_A_id")
-    mock_voice_client.voices.get.assert_any_call(voice_id="voice_B_id")
-    assert mock_voice_client.voices.get.call_count == 2
+    # Check that the API was called for both voices and no exception was raised
+    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_A_id")
+    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_B_id")
+    assert mock_elevenlabs_client.voices.get.call_count == 2
 
 
-def test_same_voice_ids_exit(mock_voice_client):
+def test_same_voice_ids_exit(mock_elevenlabs_client):
     """
     Unit test for validate_voices
     Test case where speaker_one_voice and speaker_two_voice are the same.
@@ -371,14 +494,14 @@ def test_same_voice_ids_exit(mock_voice_client):
     
     # Arrange/Act/Assert: Expect a typer.Exit with status code 1
     with pytest.raises(typer.Exit) as excinfo:
-        validate_voices(mock_voice_client, "same_id", "same_id")
+        validate_voices(mock_elevenlabs_client, "same_id", "same_id")
     
     assert excinfo.value.exit_code == 1
     # Assert: Ensure no API calls were made (it exits before the try block)
-    mock_voice_client.voices.get.assert_not_called()
+    mock_elevenlabs_client.voices.get.assert_not_called()
 
 
-def test_speaker_one_invalid_exit(mock_voice_client):
+def test_speaker_one_invalid_exit(mock_elevenlabs_client):
     """
     Unit test for validate_voices
     Test case where speaker_one_voice is invalid (raises exception).
@@ -386,23 +509,23 @@ def test_speaker_one_invalid_exit(mock_voice_client):
     
     # Arrange: Make the first call (voice_A_id) raise an exception, 
     # and the second call (voice_B_id) succeed.
-    mock_voice_client.voices.get.side_effect = [
+    mock_elevenlabs_client.voices.get.side_effect = [
         Exception, # for voice_A_id
         "VoiceObject" # for voice_B_id
     ]
     
     # Act/Assert: Expect a typer.Exit with status code 1
     with pytest.raises(typer.Exit) as excinfo:
-        validate_voices(mock_voice_client, "voice_A_id", "voice_B_id")
+        validate_voices(mock_elevenlabs_client, "voice_A_id", "voice_B_id")
     
     assert excinfo.value.exit_code == 1
     # Assert: Ensure both API calls were attempted
-    mock_voice_client.voices.get.assert_any_call(voice_id="voice_A_id")
-    mock_voice_client.voices.get.assert_any_call(voice_id="voice_B_id")
-    assert mock_voice_client.voices.get.call_count == 2
+    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_A_id")
+    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_B_id")
+    assert mock_elevenlabs_client.voices.get.call_count == 2
 
 
-def test_speaker_two_invalid_exit(mock_voice_client):
+def test_speaker_two_invalid_exit(mock_elevenlabs_client):
     """
     Unit test for validate_voices
     Test case where speaker_two_voice is invalid (raises exception).
@@ -410,43 +533,43 @@ def test_speaker_two_invalid_exit(mock_voice_client):
     
     # Arrange: Make the first call (voice_A_id) succeed, 
     # and the second call (voice_B_id) raise an exception.
-    mock_voice_client.voices.get.side_effect = [
+    mock_elevenlabs_client.voices.get.side_effect = [
         "VoiceObject", # for voice_A_id
         Exception # for voice_B_id
     ]
     
     # Act/Assert: Expect a typer.Exit with status code 1
     with pytest.raises(typer.Exit) as excinfo:
-        validate_voices(mock_voice_client, "voice_A_id", "voice_B_id")
+        validate_voices(mock_elevenlabs_client, "voice_A_id", "voice_B_id")
     
     assert excinfo.value.exit_code == 1
     # Assert: Ensure both API calls were attempted
-    mock_voice_client.voices.get.assert_any_call(voice_id="voice_A_id")
-    mock_voice_client.voices.get.assert_any_call(voice_id="voice_B_id")
-    assert mock_voice_client.voices.get.call_count == 2
+    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_A_id")
+    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_B_id")
+    assert mock_elevenlabs_client.voices.get.call_count == 2
 
 
-def test_both_invalid_exit(mock_voice_client):
+def test_both_invalid_exit(mock_elevenlabs_client):
     """
     Unit test for validate_voices
     Test case where both voices are invalid (both raise exceptions).
     """
     
     # Arrange: Make both calls raise an exception.
-    mock_voice_client.voices.get.side_effect = [
+    mock_elevenlabs_client.voices.get.side_effect = [
         Exception, # for voice_A_id
         Exception # for voice_B_id
     ]
     
     # Act/Assert: Expect a typer.Exit with status code 1
     with pytest.raises(typer.Exit) as excinfo:
-        validate_voices(mock_voice_client, "voice_A_id", "voice_B_id")
+        validate_voices(mock_elevenlabs_client, "voice_A_id", "voice_B_id")
     
     assert excinfo.value.exit_code == 1
     # Assert: Ensure both API calls were attempted
-    mock_voice_client.voices.get.assert_any_call(voice_id="voice_A_id")
-    mock_voice_client.voices.get.assert_any_call(voice_id="voice_B_id")
-    assert mock_voice_client.voices.get.call_count == 2
+    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_A_id")
+    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_B_id")
+    assert mock_elevenlabs_client.voices.get.call_count == 2
 
 @pytest.mark.parametrize(
     "input_file_is_valid",
@@ -479,12 +602,10 @@ def test_execute_transcript_generation_workflow(output_dir, api_key):
     text_summary = "This is a great text!"
     unformatted_sys_instrux = TRANSCRIPT_SYS_INSTRUCTIONS
     timestamp = 123456
-    label_one = "Abby"
-    label_two = "Tiny"
-    expected_transcript = "Abby: This is a great text.\nTiny: I'm hungry!"
-    expected_output_filepath = Path(output_dir / f'transcript_{timestamp}.txt')
+    expected_transcript = "This is a great text.\nI'm hungry!"
     with (
         patch('main.generate_text', return_value=expected_transcript),
+        patch('main.write_text_to_file') as mock_write,
         patch('main.typer.confirm', return_value=True)
     ):
         actual_transcript = execute_transcript_generation_workflow(
@@ -493,9 +614,7 @@ def test_execute_transcript_generation_workflow(output_dir, api_key):
             api_key,
             unformatted_sys_instrux,
             timestamp,
-            label_one,
-            label_two
+            text_model='my_text_model'
         )
         assert actual_transcript == expected_transcript
-        with open(expected_output_filepath, 'r') as f:
-            assert f.read() == expected_transcript
+        mock_write.assert_called_once()
