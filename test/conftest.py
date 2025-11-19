@@ -104,6 +104,23 @@ def output_dir():
     tmpdir_obj.cleanup()
 
 @pytest.fixture
+def dummy_backup_data():
+    return [
+        {
+            "voice_id": "voice_id_1",
+            "text": "Tiny is a ninjacat",
+            "filepath": "my_fake_filepath1",
+            "request_id": "123"
+        },
+        {
+            "voice_id": "voice_id_2",
+            "text": "Abby is a chungus",
+            "filepath": "my_fake_filepath2",
+            "request_id": "456"
+        }
+    ]
+
+@pytest.fixture
 def genai_client_mock():
     mock_client = MagicMock()
 

@@ -1,5 +1,6 @@
+import json
 import os
-from pathlib import Path 
+from pathlib import Path, PosixPath 
 import pytest
 import random
 import tempfile
@@ -21,9 +22,14 @@ from main import (
     generate_audio_segments,
     generate_text,
     infer_with_pdf_document_understanding,
+    read_backup_from_json_file,
     read_text_from_file,
+    validate_backup_data,
     validate_voices,
+    validate_backup_data_voice_ids,
+    validate_backup_data_segment_filepaths,
     write_audio_data_to_wav_file,
+    write_backup_to_json_file,
     write_text_to_file
 )
 from prompts import TRANSCRIPT_SYS_INSTRUCTIONS
@@ -621,25 +627,158 @@ def test_execute_transcript_generation_workflow(output_dir, api_key):
 
 # TODO: organize unit tests for separate commands. Same with E2E tests.
 
-def test_write_backup_to_json_file():
-    # TODO: write test
-    pass
+def test_write_backup_to_json_file(output_dir, dummy_backup_data):
+    """
+    Unit test against write_backup_to_json_file
+    """
+    input_data = dummy_backup_data
+    output_filepath = Path(output_dir / 'my_backup_file.json')
+    write_backup_to_json_file(input_data, output_filepath)
+    with open(str(output_filepath), "r") as f:
+        output_data = json.load(f)
 
-def test_read_backup_from_json_file():
-    # TODO: write test
-    pass
+    assert output_filepath.exists()
+    assert output_data == input_data
 
-def test_validate_backup_data():
-    # TODO: write test
-    pass
+def test_read_backup_from_json_file(dummy_backup_data):
+    """
+    Unit test against read_backup_from_json_file
+    """
+    input_filepath = 'test/test_data/my_backup_file.json'
+    expected_data = dummy_backup_data
+    
+    with patch('main.validate_backup_data') as p:
+        actual_data = read_backup_from_json_file(input_filepath)
+    
+    p.assert_called_once_with(
+        expected_data,
+        None,
+        True,
+        ['voice_id', 'text', 'filepath', 'request_id']
+    )
+    
+    assert actual_data == expected_data 
 
-def test_validate_backup_data_voice_ids():
-    # TODO: write test
-    pass
+@pytest.mark.parametrize(
+    "validate_voices",
+    [
+        pytest.param(True, id='should-validate-voices'),
+        pytest.param(False, id='should-not-validate-voices')
+    ],
+)
+def test_validate_backup_data(dummy_backup_data, validate_voices):
+    """
+    Unit test against validate_backup_data
+    """
+    input_data = dummy_backup_data
+    expected_fields = ['voice_id', 'text', 'filepath', 'request_id']
+    with (
+        patch('main.validate_backup_data_shape') as p_shape,
+        patch('main.validate_backup_data_voice_ids') as p_voice,
+        patch('main.validate_backup_data_segment_filepaths') as p_filepaths
+    ):
+        validate_backup_data(input_data, validate_voices=validate_voices)
 
-def test_validate_backup_data_segment_filepaths():
-    # TODO: write test
-    pass
+    if validate_voices:
+        p_voice.assert_called_once_with(
+            input_data,
+            None
+        )
+    else:
+        p_voice.assert_not_called()
+    
+    p_shape.assert_called_once_with(
+        input_data,
+        expected_fields
+    )
+    
+    p_filepaths.assert_called_once_with(
+        input_data
+    )
+
+@pytest.mark.parametrize(
+    "input_data, has_two_voice_ids",
+    [
+        pytest.param(
+            [
+                {'voice_id': 'voice_id_1'},
+                {'voice_id': 'voice_id_2'},
+                {'voice_id': 'voice_id_2'}
+            ], 
+            True, id='has-two-voice-ids'
+        ),
+        pytest.param(
+            [
+                {'voice_id': 'voice_id_1'},
+                {'voice_id': 'voice_id_1'},
+                {'voice_id': 'voice_id_1'}
+            ], False, id='has-one-voice-id'
+        ),
+        pytest.param(            
+            [
+                {'voice_id': 'voice_id_1'},
+                {'voice_id': 'voice_id_2'},
+                {'voice_id': 'voice_id_3'}
+            ], False, id='has-three-voice-ids'
+        )
+    ],
+)
+def test_validate_backup_data_voice_ids(mock_elevenlabs_client, input_data, has_two_voice_ids):
+    """
+    Unit test against validate_backup_data_voice_ids
+    """
+    with patch('main.validate_voices') as p:
+        if has_two_voice_ids:
+            validate_backup_data_voice_ids(input_data, mock_elevenlabs_client)
+            # can't use p.assert_called_once_with() b/c two arguments come from an unordered set
+            # so we'll inspect the args individually
+            actual_call = p.call_args[0]
+            assert len(actual_call) == 3 # number of expected args
+            assert actual_call[0] is mock_elevenlabs_client
+            voice_id_args = actual_call[1:]
+            assert len(voice_id_args) == 2
+            assert 'voice_id_1' in voice_id_args
+            assert 'voice_id_2' in voice_id_args
+        else:
+            with pytest.raises(typer.Exit) as excinfo:
+                validate_backup_data_voice_ids(input_data, mock_elevenlabs_client)
+            p.assert_not_called()
+            assert excinfo.value.exit_code == 1
+
+@pytest.mark.parametrize(
+    "filepaths_are_valid",
+    [
+        pytest.param(True, id='filepaths-are-valid'),
+        pytest.param(False, id='filepaths-are-invalid')
+    ],
+)    
+def test_validate_backup_data_segment_filepaths(filepaths_are_valid):
+    """
+    Unit test against validate_backup_data_segment_filepaths
+    """
+    input_data = [{'filepath': 'my_fake_filepath1.wav'}, {'filepath': 'my_fake_filepath2.wav'}]
+
+    expected_calls = [
+        call(PosixPath('my_fake_filepath1.wav'), '.wav'),
+        call(PosixPath('my_fake_filepath2.wav'), '.wav')
+    ]
+
+    with patch('main.file_is_valid', return_value=filepaths_are_valid) as p_file_valid:
+        if filepaths_are_valid:
+            validate_backup_data_segment_filepaths(input_data)
+            p_file_valid.assert_has_calls(
+                expected_calls,
+                any_order=False
+            )
+        else:
+            with pytest.raises(typer.Exit) as excinfo:
+                validate_backup_data_segment_filepaths(input_data)
+            p_file_valid.assert_has_calls(
+                expected_calls,
+                any_order=False
+            )
+            assert excinfo.value.exit_code == 1
+    
 
 def test_validate_backup_data_shape():
     # TODO: write test
