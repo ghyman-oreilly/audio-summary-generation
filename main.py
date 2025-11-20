@@ -616,15 +616,7 @@ def regenerate_audio_segments(
         original_segment_ix, generation_datum = generation_datum_tuple
         text_string = generation_datum["text"]
         voice_id = generation_datum["voice_id"]
-        try:
-            # find previous request id (that of preceding segment)
-            # among backup data
-            previous_request_id = (
-                data_to_regenerate[original_segment_ix-1][1]['request_id'] 
-                if original_segment_ix != 0 else ''
-            )
-        except:
-            previous_request_id = ''
+        previous_request_id = get_previous_request_id(data_to_regenerate, original_segment_ix)
         output_filepath = Path(output_dir / f"audio_chunk_{original_segment_ix:03d}_{timestamp}.wav")
         typer.echo(f"Generating audio chunk {ix+1} of {len(data_to_regenerate)}...")
         generate_audio_with_timeout(
@@ -637,6 +629,27 @@ def regenerate_audio_segments(
         )
         new_filepaths_lookup_map[original_segment_ix] = str(output_filepath)
     return new_filepaths_lookup_map
+
+def get_previous_request_id(
+    data_to_regenerate: list[tuple[int, dict]],
+    original_segment_ix: int
+):
+    """
+    Get the request_id from data_to_regenerate
+    items by index
+
+    Represents the request_id of the item
+    preceding the current item in the dataset
+    """
+    try:
+        previous_request_id = (
+            data_to_regenerate[original_segment_ix-1][1]['request_id'] 
+            if original_segment_ix != 0 else ''
+        )
+    except:
+        previous_request_id = ''
+    
+    return previous_request_id
 
 def dir_is_valid(
     path_to_dir: Path
