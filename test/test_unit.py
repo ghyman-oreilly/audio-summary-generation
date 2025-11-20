@@ -12,6 +12,7 @@ from conftest import MINIMAL_FILE_CONTENT, DUMMY_BACKUP_DATA
 from main import (
     check_api_key,
     check_tokenizer_data_availability,
+    create_generation_data,
     create_speaker_text_chunks,
     combine_wav_files,
     delete_files,
@@ -23,6 +24,7 @@ from main import (
     generate_audio_segments,
     generate_menu,
     generate_text,
+    get_voice_owner_id_from_community_library,
     infer_with_pdf_document_understanding,
     read_backup_from_json_file,
     read_text_from_file,
@@ -899,14 +901,171 @@ def test_voice_exists_in_account_library(voice_exists, other_exception_raised, m
         with pytest.raises(Exception):
             voice_exists_in_account_library(voice_id, mock_elevenlabs_client)
 
+class TestGetVoiceOwnerIdFromCommunityLibrary():
+    """
+    Unit tests against get_voice_owner_id_from_community_library
+    """
 
-def test_get_voice_owner_id_from_community_library():
-    # TODO: write test
-    pass
+    # Helper to create fake voice objects quickly
+    def make_mock_voice(self, v_id, owner_id="owner_123"):
+        m = MagicMock()
+        m.voice_id = v_id
+        m.public_owner_id = owner_id
+        return m
 
-def test_create_generation_data():
-    # TODO: write test
-    pass
+    @patch('main.time.sleep')
+    def test_get_voice_owner_scenarios(self, mock_sleep):
+        """
+        Unit test against get_voice_owner_id_from_community_library
+
+        voice_id is found
+        """
+        target_voice_id = "target_id"
+        expected_owner_id = "found_owner_abc"
+        mock_client = MagicMock()
+
+        # Page 1: Wrong voices, has_more = True
+        page_1 = MagicMock()
+        page_1.voices = [self.make_mock_voice("wrong_id_1"), self.make_mock_voice("wrong_id_2")]
+        page_1.has_more = True
+
+        # Page 2: Target voice exists, has_more = True
+        # (we should stop paginating here)
+        page_2 = MagicMock()
+        page_2.voices = [self.make_mock_voice(target_voice_id, expected_owner_id)]
+        page_2.has_more = True
+
+        # Page 3: Wrong voices, has_more = False
+        page_3 = MagicMock()
+        page_3.voices = [self.make_mock_voice("wrong_id_3"), self.make_mock_voice("wrong_id_4")]
+        page_3.has_more = False
+
+        # Configure the client to return the pages
+        mock_client.voices.get_shared.side_effect = [page_1, page_2, page_3]
+
+        result = get_voice_owner_id_from_community_library(target_voice_id, mock_client)
+
+        assert result == expected_owner_id
+        
+        assert mock_client.voices.get_shared.call_count == 2
+        mock_client.voices.get_shared.assert_has_calls([
+            call(page_size=100, page=0),
+            call(page_size=100, page=1)
+        ])
+        
+        mock_sleep.assert_called_once()
+
+    @patch('main.time.sleep')
+    def test_voice_not_found(self, mock_sleep):
+        """
+        Unit test against get_voice_owner_id_from_community_library
+
+        voice_id is not found
+        """
+        mock_client = MagicMock()
+        target_voice_id = "missing_id"
+
+        page_1 = MagicMock()
+        page_1.voices = [self.make_mock_voice("other_id")]
+        page_1.has_more = False
+        
+        mock_client.voices.get_shared.return_value = page_1
+
+        result = get_voice_owner_id_from_community_library(target_voice_id, mock_client)
+        
+        assert result is None
+        mock_client.voices.get_shared.assert_called_once()
+
+@pytest.mark.parametrize(
+    "has_multistring_sublist",
+    [
+        pytest.param(True, id='simple-chunk-list'),
+        pytest.param(False, id='list-with-multistring-sublist')
+    ],
+)   
+def test_create_generation_data(has_multistring_sublist):
+    """
+    Unit test against create_generation_data
+
+    Text strings within a single sublist should be
+    associated with the same voice ID 
+    """
+    speaker_one = 'abc'
+    speaker_two = 'xyz'
+    timestamp = '123'
+    output_filepath = 'my_fake_filepath'
+    if has_multistring_sublist:
+        transcript_chunks = [
+            ["Hey there."],
+            ["Hello!"],
+            ["I'm trying to write some tests."],
+            ["That's great to hear! Good luck!"]
+        ]
+        expected_output = [
+            {
+                'voice_id': 'abc', 
+                'text': 'Hey there.', 
+                'filepath': 'my_fake_filepath/audio_chunk_000_123.wav'
+            },
+            {
+                'voice_id': 'xyz', 
+                'text': 'Hello!', 
+                'filepath': 'my_fake_filepath/audio_chunk_001_123.wav'
+            },
+            {
+                'voice_id': 'abc', 
+                'text': 'I\'m trying to write some tests.', 
+                'filepath': 'my_fake_filepath/audio_chunk_002_123.wav'
+            },
+            {
+                'voice_id': 'xyz', 
+                'text': 'That\'s great to hear! Good luck!', 
+                'filepath': 'my_fake_filepath/audio_chunk_003_123.wav'
+            }
+        ]
+        assert create_generation_data(
+            transcript_chunks,
+            Path(output_filepath),
+            timestamp,
+            speaker_one,
+            speaker_two
+        ) == expected_output
+    else:
+        transcript_chunks = [
+            ["Hey there."],
+            ["Hello!", "I'm trying to write some tests."], # two-string sublist
+            ["That's great to hear! Good luck!"]
+        ]
+        expected_output = [
+            {
+                'voice_id': 'abc', 
+                'text': 'Hey there.', 
+                'filepath': 'my_fake_filepath/audio_chunk_000_123.wav'
+            },
+            {
+                'voice_id': 'xyz', # two consequtive dicts with this id
+                'text': 'Hello!',
+                'filepath': 'my_fake_filepath/audio_chunk_001_123.wav'
+            },
+            {
+                'voice_id': 'xyz', 
+                'text': 'I\'m trying to write some tests.',
+                'filepath': 'my_fake_filepath/audio_chunk_002_123.wav'
+            },
+            {
+                'voice_id': 'abc', 
+                'text': 'That\'s great to hear! Good luck!', 
+                'filepath': 'my_fake_filepath/audio_chunk_003_123.wav'
+            }
+        ]
+        assert create_generation_data(
+            transcript_chunks,
+            Path(output_filepath),
+            timestamp,
+            speaker_one,
+            speaker_two
+        ) == expected_output
+
 
 def test_regenerate_audio_segments():
     # TODO: write test
