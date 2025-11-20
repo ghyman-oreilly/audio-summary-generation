@@ -1067,6 +1067,10 @@ def test_create_generation_data(has_multistring_sublist):
         ) == expected_output
 
 
+def test_get_previous_request_id():
+    # TODO: write test
+    pass
+
 def test_regenerate_audio_segments():
     # TODO: write test
     pass
