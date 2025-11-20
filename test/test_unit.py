@@ -8,7 +8,7 @@ import typer
 from unittest.mock import call, MagicMock, patch
 import wave
 
-from conftest import MINIMAL_FILE_CONTENT
+from conftest import MINIMAL_FILE_CONTENT, DUMMY_BACKUP_DATA
 from main import (
     check_api_key,
     create_speaker_text_chunks,
@@ -25,9 +25,10 @@ from main import (
     read_backup_from_json_file,
     read_text_from_file,
     validate_backup_data,
-    validate_voices,
+    validate_backup_data_shape,
     validate_backup_data_voice_ids,
     validate_backup_data_segment_filepaths,
+    validate_voices,
     write_audio_data_to_wav_file,
     write_backup_to_json_file,
     write_text_to_file
@@ -627,11 +628,11 @@ def test_execute_transcript_generation_workflow(output_dir, api_key):
 
 # TODO: organize unit tests for separate commands. Same with E2E tests.
 
-def test_write_backup_to_json_file(output_dir, dummy_backup_data):
+def test_write_backup_to_json_file(output_dir, DUMMY_BACKUP_DATA):
     """
     Unit test against write_backup_to_json_file
     """
-    input_data = dummy_backup_data
+    input_data = DUMMY_BACKUP_DATA
     output_filepath = Path(output_dir / 'my_backup_file.json')
     write_backup_to_json_file(input_data, output_filepath)
     with open(str(output_filepath), "r") as f:
@@ -640,12 +641,12 @@ def test_write_backup_to_json_file(output_dir, dummy_backup_data):
     assert output_filepath.exists()
     assert output_data == input_data
 
-def test_read_backup_from_json_file(dummy_backup_data):
+def test_read_backup_from_json_file(DUMMY_BACKUP_DATA):
     """
     Unit test against read_backup_from_json_file
     """
     input_filepath = 'test/test_data/my_backup_file.json'
-    expected_data = dummy_backup_data
+    expected_data = DUMMY_BACKUP_DATA
     
     with patch('main.validate_backup_data') as p:
         actual_data = read_backup_from_json_file(input_filepath)
@@ -666,11 +667,11 @@ def test_read_backup_from_json_file(dummy_backup_data):
         pytest.param(False, id='should-not-validate-voices')
     ],
 )
-def test_validate_backup_data(dummy_backup_data, validate_voices):
+def test_validate_backup_data(validate_voices):
     """
     Unit test against validate_backup_data
     """
-    input_data = dummy_backup_data
+    input_data = DUMMY_BACKUP_DATA
     expected_fields = ['voice_id', 'text', 'filepath', 'request_id']
     with (
         patch('main.validate_backup_data_shape') as p_shape,
@@ -778,11 +779,38 @@ def test_validate_backup_data_segment_filepaths(filepaths_are_valid):
                 any_order=False
             )
             assert excinfo.value.exit_code == 1
-    
 
-def test_validate_backup_data_shape():
-    # TODO: write test
-    pass
+@pytest.mark.parametrize(
+    "input_data, is_valid",
+    [
+        pytest.param(DUMMY_BACKUP_DATA, True, id='data-is-valid'),
+        pytest.param(DUMMY_BACKUP_DATA[0], False, id='data-is-not-list'),
+        pytest.param(
+            [[DUMMY_BACKUP_DATA[0]], DUMMY_BACKUP_DATA[1]], 
+            False, 
+            id='data-subitem-isnt-a-dict'
+        ),
+        pytest.param(
+            [{'voice_id': 1, 'text': 'str', 'filepath': 'str', 'request_id': 'str'}], 
+            False, 
+            id='data-field-isnt-a-string'
+        ),
+        pytest.param(
+            [{'text': 'str', 'filepath': 'str', 'request_id': 'str'}],
+            False, 
+            id='expected-field-not-found')
+    ]
+)    
+def test_validate_backup_data_shape(input_data, is_valid):
+    """
+    Unit test against validate_backup_data_shape
+    """
+    if is_valid:
+        assert validate_backup_data_shape(input_data) == True
+    else:
+        with pytest.raises(typer.Exit) as excinfo:
+            validate_backup_data_shape(input_data)
+        assert excinfo.value.exit_code == 1
 
 def test_generate_menu():
     # TODO: write test

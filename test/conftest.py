@@ -103,9 +103,7 @@ def output_dir():
     yield Path(output_filepath)
     tmpdir_obj.cleanup()
 
-@pytest.fixture
-def dummy_backup_data():
-    return [
+DUMMY_BACKUP_DATA = [
         {
             "voice_id": "voice_id_1",
             "text": "Tiny is a ninjacat",

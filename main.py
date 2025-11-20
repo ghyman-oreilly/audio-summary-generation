@@ -126,7 +126,7 @@ def validate_backup_data_shape(
             f'string values: {expected_fields}\n'
             f'Exiting.'
         )
-        typer.Exit(1)
+        raise typer.Exit(1)
     
     return is_valid
 
