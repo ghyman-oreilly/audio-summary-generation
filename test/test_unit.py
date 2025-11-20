@@ -628,7 +628,7 @@ def test_execute_transcript_generation_workflow(output_dir, api_key):
 
 # TODO: organize unit tests for separate commands. Same with E2E tests.
 
-def test_write_backup_to_json_file(output_dir, DUMMY_BACKUP_DATA):
+def test_write_backup_to_json_file(output_dir):
     """
     Unit test against write_backup_to_json_file
     """
@@ -641,7 +641,7 @@ def test_write_backup_to_json_file(output_dir, DUMMY_BACKUP_DATA):
     assert output_filepath.exists()
     assert output_data == input_data
 
-def test_read_backup_from_json_file(DUMMY_BACKUP_DATA):
+def test_read_backup_from_json_file():
     """
     Unit test against read_backup_from_json_file
     """
