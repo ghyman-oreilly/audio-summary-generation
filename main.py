@@ -542,13 +542,14 @@ def create_generation_data(
     text, and filepath fields.
     """
     generation_data = []
+    string_counter = 0
     for ix, transcript_chunk in enumerate(transcript_chunks):
-        output_filepath = Path(output_dir / f"audio_chunk_{ix:03d}_{timestamp}.wav")
         if ix == 0 or ix % 2 == 0:
             voice_id = speaker_one_voice
         else:
             voice_id = speaker_two_voice
         for text_string in transcript_chunk: 
+            output_filepath = Path(output_dir / f"audio_chunk_{string_counter:03d}_{timestamp}.wav")
             generation_data.append(
                 {
                     'voice_id': voice_id, 
@@ -556,6 +557,7 @@ def create_generation_data(
                     'filepath': str(output_filepath)
                 }
             )
+            string_counter += 1
     return generation_data
 
 def generate_audio_segments(
