@@ -11,6 +11,7 @@ import wave
 from conftest import MINIMAL_FILE_CONTENT, DUMMY_BACKUP_DATA
 from main import (
     check_api_key,
+    check_tokenizer_data_availability,
     create_speaker_text_chunks,
     combine_wav_files,
     delete_files,
@@ -20,6 +21,7 @@ from main import (
     file_is_valid,
     generate_audio_with_timeout,
     generate_audio_segments,
+    generate_menu,
     generate_text,
     infer_with_pdf_document_understanding,
     read_backup_from_json_file,
@@ -29,6 +31,7 @@ from main import (
     validate_backup_data_voice_ids,
     validate_backup_data_segment_filepaths,
     validate_voices,
+    voice_exists_in_account_library,
     write_audio_data_to_wav_file,
     write_backup_to_json_file,
     write_text_to_file
@@ -476,107 +479,111 @@ def test_check_api_key(key_value, force_prompt):
             mock_prompt.assert_called_once()
             mock_set.assert_called_once_with(service_name, username, "new_api_key")
 
-def test_validate_voices_success(mock_elevenlabs_client):
+class TestValidateVoices():
     """
-    Unit test for validate_voices
-    Test case where both voices are valid.
+    Unit tests for validate_voices
     """
-    # Set return values for the mocked API calls
-    mock_elevenlabs_client.voices.get.return_value = "VoiceObject" 
-    
-    # Call the function with distinct valid voice IDs
-    validate_voices(mock_elevenlabs_client, "voice_A_id", "voice_B_id")
-    
-    # Check that the API was called for both voices and no exception was raised
-    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_A_id")
-    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_B_id")
-    assert mock_elevenlabs_client.voices.get.call_count == 2
-
-
-def test_validate_voices_same_voice_ids_exit(mock_elevenlabs_client):
-    """
-    Unit test for validate_voices
-    Test case where speaker_one_voice and speaker_two_voice are the same.
-    """
-    
-    # Arrange/Act/Assert: Expect a typer.Exit with status code 1
-    with pytest.raises(typer.Exit) as excinfo:
-        validate_voices(mock_elevenlabs_client, "same_id", "same_id")
-    
-    assert excinfo.value.exit_code == 1
-    # Assert: Ensure no API calls were made (it exits before the try block)
-    mock_elevenlabs_client.voices.get.assert_not_called()
-
-
-def test_validate_voices_speaker_one_invalid_exit(mock_elevenlabs_client):
-    """
-    Unit test for validate_voices
-    Test case where speaker_one_voice is invalid (raises exception).
-    """
-    
-    # Arrange: Make the first call (voice_A_id) raise an exception, 
-    # and the second call (voice_B_id) succeed.
-    mock_elevenlabs_client.voices.get.side_effect = [
-        Exception, # for voice_A_id
-        "VoiceObject" # for voice_B_id
-    ]
-    
-    # Act/Assert: Expect a typer.Exit with status code 1
-    with pytest.raises(typer.Exit) as excinfo:
+    def test_validate_voices_success(self, mock_elevenlabs_client):
+        """
+        Unit test for validate_voices
+        Test case where both voices are valid.
+        """
+        # Set return values for the mocked API calls
+        mock_elevenlabs_client.voices.get.return_value = "VoiceObject" 
+        
+        # Call the function with distinct valid voice IDs
         validate_voices(mock_elevenlabs_client, "voice_A_id", "voice_B_id")
-    
-    assert excinfo.value.exit_code == 1
-    # Assert: Ensure both API calls were attempted
-    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_A_id")
-    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_B_id")
-    assert mock_elevenlabs_client.voices.get.call_count == 2
+        
+        # Check that the API was called for both voices and no exception was raised
+        mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_A_id")
+        mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_B_id")
+        assert mock_elevenlabs_client.voices.get.call_count == 2
 
 
-def test_validate_voices_speaker_two_invalid_exit(mock_elevenlabs_client):
-    """
-    Unit test for validate_voices
-    Test case where speaker_two_voice is invalid (raises exception).
-    """
-    
-    # Arrange: Make the first call (voice_A_id) succeed, 
-    # and the second call (voice_B_id) raise an exception.
-    mock_elevenlabs_client.voices.get.side_effect = [
-        "VoiceObject", # for voice_A_id
-        Exception # for voice_B_id
-    ]
-    
-    # Act/Assert: Expect a typer.Exit with status code 1
-    with pytest.raises(typer.Exit) as excinfo:
-        validate_voices(mock_elevenlabs_client, "voice_A_id", "voice_B_id")
-    
-    assert excinfo.value.exit_code == 1
-    # Assert: Ensure both API calls were attempted
-    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_A_id")
-    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_B_id")
-    assert mock_elevenlabs_client.voices.get.call_count == 2
+    def test_validate_voices_same_voice_ids_exit(self, mock_elevenlabs_client):
+        """
+        Unit test for validate_voices
+        Test case where speaker_one_voice and speaker_two_voice are the same.
+        """
+        
+        # Arrange/Act/Assert: Expect a typer.Exit with status code 1
+        with pytest.raises(typer.Exit) as excinfo:
+            validate_voices(mock_elevenlabs_client, "same_id", "same_id")
+        
+        assert excinfo.value.exit_code == 1
+        # Assert: Ensure no API calls were made (it exits before the try block)
+        mock_elevenlabs_client.voices.get.assert_not_called()
 
 
-def test_validate_voices_both_invalid_exit(mock_elevenlabs_client):
-    """
-    Unit test for validate_voices
-    Test case where both voices are invalid (both raise exceptions).
-    """
-    
-    # Arrange: Make both calls raise an exception.
-    mock_elevenlabs_client.voices.get.side_effect = [
-        Exception, # for voice_A_id
-        Exception # for voice_B_id
-    ]
-    
-    # Act/Assert: Expect a typer.Exit with status code 1
-    with pytest.raises(typer.Exit) as excinfo:
-        validate_voices(mock_elevenlabs_client, "voice_A_id", "voice_B_id")
-    
-    assert excinfo.value.exit_code == 1
-    # Assert: Ensure both API calls were attempted
-    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_A_id")
-    mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_B_id")
-    assert mock_elevenlabs_client.voices.get.call_count == 2
+    def test_validate_voices_speaker_one_invalid_exit(self, mock_elevenlabs_client):
+        """
+        Unit test for validate_voices
+        Test case where speaker_one_voice is invalid (raises exception).
+        """
+        
+        # Arrange: Make the first call (voice_A_id) raise an exception, 
+        # and the second call (voice_B_id) succeed.
+        mock_elevenlabs_client.voices.get.side_effect = [
+            Exception, # for voice_A_id
+            "VoiceObject" # for voice_B_id
+        ]
+        
+        # Act/Assert: Expect a typer.Exit with status code 1
+        with pytest.raises(typer.Exit) as excinfo:
+            validate_voices(mock_elevenlabs_client, "voice_A_id", "voice_B_id")
+        
+        assert excinfo.value.exit_code == 1
+        # Assert: Ensure both API calls were attempted
+        mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_A_id")
+        mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_B_id")
+        assert mock_elevenlabs_client.voices.get.call_count == 2
+
+
+    def test_validate_voices_speaker_two_invalid_exit(self, mock_elevenlabs_client):
+        """
+        Unit test for validate_voices
+        Test case where speaker_two_voice is invalid (raises exception).
+        """
+        
+        # Arrange: Make the first call (voice_A_id) succeed, 
+        # and the second call (voice_B_id) raise an exception.
+        mock_elevenlabs_client.voices.get.side_effect = [
+            "VoiceObject", # for voice_A_id
+            Exception # for voice_B_id
+        ]
+        
+        # Act/Assert: Expect a typer.Exit with status code 1
+        with pytest.raises(typer.Exit) as excinfo:
+            validate_voices(mock_elevenlabs_client, "voice_A_id", "voice_B_id")
+        
+        assert excinfo.value.exit_code == 1
+        # Assert: Ensure both API calls were attempted
+        mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_A_id")
+        mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_B_id")
+        assert mock_elevenlabs_client.voices.get.call_count == 2
+
+
+    def test_validate_voices_both_invalid_exit(self, mock_elevenlabs_client):
+        """
+        Unit test for validate_voices
+        Test case where both voices are invalid (both raise exceptions).
+        """
+        
+        # Arrange: Make both calls raise an exception.
+        mock_elevenlabs_client.voices.get.side_effect = [
+            Exception, # for voice_A_id
+            Exception # for voice_B_id
+        ]
+        
+        # Act/Assert: Expect a typer.Exit with status code 1
+        with pytest.raises(typer.Exit) as excinfo:
+            validate_voices(mock_elevenlabs_client, "voice_A_id", "voice_B_id")
+        
+        assert excinfo.value.exit_code == 1
+        # Assert: Ensure both API calls were attempted
+        mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_A_id")
+        mock_elevenlabs_client.voices.get.assert_any_call(voice_id="voice_B_id")
+        assert mock_elevenlabs_client.voices.get.call_count == 2
 
 @pytest.mark.parametrize(
     "input_file_is_valid",
@@ -812,21 +819,86 @@ def test_validate_backup_data_shape(input_data, is_valid):
             validate_backup_data_shape(input_data)
         assert excinfo.value.exit_code == 1
 
-def test_generate_menu():
-    # TODO: write test
-    pass
+@patch('main.TerminalMenu')
+@pytest.mark.parametrize(
+    "options, title_no_multi, multiselect",
+    [
+        pytest.param([0, 1, 2], False, False, id='simple-invocation'),
+        pytest.param([0, 1, 2], True, False, id='invocation-with-title'),
+        pytest.param([0, 1, 2], False, True, id='invocation-with-multiselect')
+    ],
+)    
+def test_generate_menu(term_menu_mock, options, title_no_multi, multiselect):
+    """
+    Unit test against generate_menu
+    """
+    title = 'my_title'
+    term_menu_mock.return_value.show.return_value = 0
+    if title_no_multi:
+        assert generate_menu(options, title) == 0
+        term_menu_mock.assert_called_once_with(
+            options,
+            title=title
+        )
+    elif multiselect:
+        # kwargs can't be passed without explicitly passing a title as well 
+        # (even if setting title to None)
+        assert generate_menu(options, title=title, multiselect=True) == 0
+        term_menu_mock.assert_called_once_with(
+            options,
+            title=title,
+            multiselect=True
+        )
+    else:
+        assert generate_menu(options) == 0
+        term_menu_mock.assert_called_once_with(options, title=None)
 
-def test_check_tokenizer_data_availability():
-    # TODO: write test
-    pass
+@patch('main.nltk')        
+@pytest.mark.parametrize(
+    "models_found",
+    [
+        pytest.param(True, id='punkt-models-found'),
+        pytest.param(False, id='punkt-models-missing')
+    ],
+)   
+def test_check_tokenizer_data_availability(nltk_mock, models_found):
+    """
+    Unit test against check_tokenizer_data_availability
+    """
+    if models_found:
+        check_tokenizer_data_availability()
+        nltk_mock.data.find.assert_called_once()
+        nltk_mock.download.assert_not_called()
+    else:
+        nltk_mock.data.find.side_effect = LookupError
+        check_tokenizer_data_availability()
+        nltk_mock.data.find.assert_called_once()
+        nltk_mock.download.assert_called_once()
+     
+@pytest.mark.parametrize(
+    "voice_exists, other_exception_raised",
+    [
+        pytest.param(True, False, id='voice-exists'),
+        pytest.param(False, False, id='voice-doesnt-exist'),
+        pytest.param(False, True, id='other-exception-raised')
+    ],
+)   
+def test_voice_exists_in_account_library(voice_exists, other_exception_raised, mock_elevenlabs_client):
+    """
+    Unit test against voice_exists_in_account_library
+    """
+    voice_id = 'my_voice_id'
+    if voice_exists:
+        assert voice_exists_in_account_library(voice_id, mock_elevenlabs_client) == True
+        mock_elevenlabs_client.voices.get.assert_called_once()
+    elif not other_exception_raised:
+        mock_elevenlabs_client.voices.get.side_effect = Exception('... voice_not_found ...')
+        assert voice_exists_in_account_library(voice_id, mock_elevenlabs_client) == False
+    else:
+        mock_elevenlabs_client.voices.get.side_effect = Exception('... other exception message ...')
+        with pytest.raises(Exception):
+            voice_exists_in_account_library(voice_id, mock_elevenlabs_client)
 
-def test_add_elevenlabs_voice():
-    # TODO: write test
-    pass
-
-def test_voice_exists_in_account_library():
-    # TODO: write test
-    pass
 
 def test_get_voice_owner_id_from_community_library():
     # TODO: write test
