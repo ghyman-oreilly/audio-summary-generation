@@ -5,6 +5,7 @@ import pytest
 import random
 import tempfile
 import typer
+from unittest import TestCase
 from unittest.mock import call, MagicMock, patch
 import wave
 
@@ -12,6 +13,7 @@ from conftest import MINIMAL_FILE_CONTENT, DUMMY_BACKUP_DATA
 from main import (
     check_api_key,
     check_tokenizer_data_availability,
+    chunk_segment_by_sentences,
     create_generation_data,
     create_speaker_text_chunks,
     combine_wav_files,
@@ -1163,9 +1165,77 @@ def test_regenerate_audio_segments(mock_elevenlabs_client):
         any_order=False
     )
 
-def test_chunk_segment_by_sentences():
-    # TODO: write test
-    pass
+class TestChunkSegmentBySentences(TestCase):
+    """
+    Unit tests against chunk_segment_by_sentences
+    """
+
+    sentence_one = "Abby is a chungasaurus rex."
+    len_sentence_one = len(sentence_one)
+    sentence_two = "Tiny is a ninjacat."
+    len_sentence_two = len(sentence_two)
+    
+    text = f"{sentence_one} {sentence_two}"
+
+
+    def setUp(self):
+        """
+        Set up the patcher manually.
+
+        Patch decorator on the class isn't suitable
+        for this use case, because we want to set
+        the same method return value for all of the tests.
+        """
+        # Create the patcher
+        self.nltk_patcher = patch('main.nltk')
+        
+        # Start the patcher and store the mock object
+        self.mock_nltk = self.nltk_patcher.start()
+        
+        # Ensure the patch is stopped after tests finish
+        self.addCleanup(self.nltk_patcher.stop)
+
+        # Configure the return values
+        self.mock_nltk.tokenize.sent_tokenize.return_value = [
+            self.sentence_one, 
+            self.sentence_two
+        ]
+    
+    def test_raises_error_on_limit_exceeded_by_single_sentence(self):
+        """
+        Exception raised if char limit exceeded
+        by individual sentence.
+        """
+        char_limit = self.len_sentence_one - 1
+
+        with pytest.raises(typer.Exit) as excinfo:
+            chunk_segment_by_sentences(self.text, char_limit)
+            assert excinfo.value.exit_code == 1
+
+
+    def test_char_limit_larger_than_first_sentence_smaller_than_both(self):
+        """
+        If char limit is larger than the first sentence and
+        less than the two sentences combined, we should end up
+        with two strings.
+        """
+        char_limit = self.len_sentence_one + (self.len_sentence_two / 2)
+        assert chunk_segment_by_sentences(self.text, char_limit) == [
+            self.sentence_one,
+            self.sentence_two
+        ]
+
+    def test_char_limit_larger_than_sentences_combined(self):
+        """
+        If the char limit is larger than the two 
+        sentences combined, we should end up with 
+        one string.
+        """
+        char_limit = self.len_sentence_one + self.len_sentence_two + 1
+        assert chunk_segment_by_sentences(self.text, char_limit) == [
+            self.text
+        ]
+
 
 def test_generate_audio_chunk_from_chunk():
     # TODO: write test
