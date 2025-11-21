@@ -959,10 +959,12 @@ def generate_audio_chunk_from_chunk(
                 write_audio_data_to_wav_file(output_file, audio_data)
                 return request_id
         except Exception as e:
-            jitter_wait(delay, attempt, e)
+            if attempt < max_retries - 1:
+                # wait if we have more attempts
+                jitter_wait(delay, attempt, e)
 
-        typer.echo("Max retries exceeded. Exiting.")
-        raise typer.Exit(1)   
+    typer.echo("Max retries exceeded. Exiting.")
+    raise typer.Exit(1)   
 
 def generate_voice_settings(user_config: dict):
     """
