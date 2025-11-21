@@ -57,18 +57,6 @@ def audio_output_filepath():
 def api_key():
     yield "my_api_key"
 
-class ElevenLabs:
-    # A simplified stand-in for the ElevenLabs client
-    pass
-
-@pytest.fixture
-def mock_elevenlabs_client():
-    """Fixture to provide a mocked ElevenLabs client."""
-    client = MagicMock(spec=ElevenLabs)
-    client.voices = MagicMock()
-    client.voices.get = MagicMock()
-    return client
-
 @pytest.mark.parametrize(
     "path_to_dir, expected",
     [
@@ -218,7 +206,7 @@ def test_create_speaker_text_chunks(
             # For tests where no splitting occurs, the mock shouldn't be called
             mock_split_func.assert_not_called()
 
-def test_generate_audio_segments(mock_elevenlabs_client):
+def test_generate_audio_segments(mock_elevenlabs_client, mock_voice_settings):
     """
     Unit test against generate_audio_segments 
     """
@@ -244,6 +232,7 @@ def test_generate_audio_segments(mock_elevenlabs_client):
         generate_audio_segments(
             generation_data, 
             mock_elevenlabs_client, 
+            mock_voice_settings,
             model_id=model_id,
             backup_filepath=fake_backup_filepath
         )
@@ -261,6 +250,7 @@ def test_generate_audio_segments(mock_elevenlabs_client):
                 voice_id='my_vid_1',
                 output_file=Path('my_filepath1'),
                 tts_client=mock_elevenlabs_client,
+                voice_settings=mock_voice_settings,
                 model_id=model_id,
                 previous_request_ids=[]
             ),
@@ -269,6 +259,7 @@ def test_generate_audio_segments(mock_elevenlabs_client):
                 voice_id='my_vid_2',
                 output_file=Path('my_filepath2'),
                 tts_client=mock_elevenlabs_client,
+                voice_settings=mock_voice_settings,
                 model_id=model_id,
                 previous_request_ids=['request_id_0']
             )
@@ -282,7 +273,7 @@ def test_generate_audio_segments(mock_elevenlabs_client):
             fake_backup_filepath
         )
 
-def test_generate_audio_with_timeout_succeeds(mock_elevenlabs_client):
+def test_generate_audio_with_timeout_succeeds(mock_elevenlabs_client, mock_voice_settings):
     """
     Unit test against generate_audio_with_timeout
     """
@@ -300,6 +291,7 @@ def test_generate_audio_with_timeout_succeeds(mock_elevenlabs_client):
                     voice_id="test_voice",
                     output_file=Path("test_output.mp3"),
                     tts_client=mock_elevenlabs_client,
+                    voice_settings=mock_voice_settings,
                     model_id="test_model",
                     previous_request_ids=["prev_id"]
                 )
@@ -311,11 +303,12 @@ def test_generate_audio_with_timeout_succeeds(mock_elevenlabs_client):
                 voice_id="test_voice",
                 output_file=Path("test_output.mp3"),
                 tts_client=mock_elevenlabs_client,
+                voice_settings=mock_voice_settings,
                 model_id="test_model",
                 previous_request_ids=["prev_id"]
             )
 
-def test_generate_audio_with_timeout_timeout_logic_works(mock_elevenlabs_client):
+def test_generate_audio_with_timeout_timeout_logic_works(mock_elevenlabs_client, mock_voice_settings):
     """
     Tests that the correct timeout value is passed and the TimeoutError is handled.
     """
@@ -352,6 +345,7 @@ def test_generate_audio_with_timeout_timeout_logic_works(mock_elevenlabs_client)
                 voice_id="test_voice",
                 output_file=Path("test_output.mp3"),
                 tts_client=mock_elevenlabs_client,
+                voice_settings=mock_voice_settings,
                 model_id="test_model",
                 timeout=TEST_TIMEOUT, 
                 previous_request_ids=[]
@@ -1096,7 +1090,7 @@ def test_get_previous_request_id(input_data, segment_index, id_is_returned):
     else:
         assert get_previous_request_id(input_data, segment_index) == ''
 
-def test_regenerate_audio_segments(mock_elevenlabs_client):
+def test_regenerate_audio_segments(mock_elevenlabs_client, mock_voice_settings):
     """
     Unit test against regenerate_audio_segments
     """
@@ -1130,6 +1124,7 @@ def test_regenerate_audio_segments(mock_elevenlabs_client):
         assert regenerate_audio_segments(
             input_data,
             mock_elevenlabs_client,
+            mock_voice_settings,
             'my_model',
             Path(output_dir),
             timestamp
@@ -1150,6 +1145,7 @@ def test_regenerate_audio_segments(mock_elevenlabs_client):
                 voice_id=DUMMY_BACKUP_DATA[0]['voice_id'],
                 output_file=Path(output_filepath_one),
                 tts_client=mock_elevenlabs_client,
+                voice_settings=mock_voice_settings,
                 model_id=model_id,
                 previous_request_ids=[previous_request_ids[0]]
             ),
@@ -1158,6 +1154,7 @@ def test_regenerate_audio_segments(mock_elevenlabs_client):
                 voice_id=DUMMY_BACKUP_DATA[1]['voice_id'],
                 output_file=Path(output_filepath_two),
                 tts_client=mock_elevenlabs_client,
+                voice_settings=mock_voice_settings,
                 model_id=model_id,
                 previous_request_ids=[previous_request_ids[1]]
             ),

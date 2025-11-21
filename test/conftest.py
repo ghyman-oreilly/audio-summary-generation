@@ -166,3 +166,22 @@ def wav_file_data():
             "audio_data": audio_data
         }
     yield _get_wav_file_data 
+
+class ElevenLabs:
+    # A simplified stand-in for the ElevenLabs client
+    pass
+
+class VoiceSettings:
+     pass
+
+@pytest.fixture
+def mock_elevenlabs_client():
+    """Fixture to provide a mocked ElevenLabs client."""
+    client = MagicMock(spec=ElevenLabs)
+    client.voices = MagicMock()
+    client.voices.get = MagicMock()
+    return client
+
+@pytest.fixture
+def mock_voice_settings():
+     return MagicMock(spec=VoiceSettings)

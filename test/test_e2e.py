@@ -64,7 +64,11 @@ def assert_call_with_regex_path(mock_func, text_content, path_regex):
 @patch("main.typer.confirm")
 @patch("main.Path.cwd")
 @patch("main.time.time", return_value=MOCK_TIMESTAMP)
+@patch("main.ElevenLabs")
+@patch("main.generate_voice_settings")
 def test_generate_audio_summary_pdf_only_e2e(
+    mock_generate_voice_settings,
+    mock_elevenlabs_constructor,
     mock_time,
     mock_cwd,
     mock_confirm,
@@ -82,7 +86,9 @@ def test_generate_audio_summary_pdf_only_e2e(
     mock_delete_files,
     mock_combine_wav_files,
     mock_output_dir,
-    mock_path_to_pdf
+    mock_path_to_pdf,
+    mock_elevenlabs_client,
+    mock_voice_settings
 ):
     """
     E2E test for _generate_audio_summary when only path_to_pdf and output_dir are provided.
@@ -98,6 +104,9 @@ def test_generate_audio_summary_pdf_only_e2e(
     # [2] Save partial audio chunks? (False, to ensure delete_files is called)
     mock_confirm.side_effect = [True, True, False]
     mock_cwd.return_value = mock_output_dir.parent
+
+    mock_elevenlabs_constructor.return_value = mock_elevenlabs_client
+    mock_generate_voice_settings.return_value = mock_voice_settings
 
     # 2. Execute the function under test:
     _generate_audio_summary(
@@ -155,7 +164,8 @@ def test_generate_audio_summary_pdf_only_e2e(
         text='Chunk 1', 
         voice_id='VOICE_ONE', 
         output_file=EXPECTED_PATH_000,
-        tts_client=ANY, 
+        tts_client=mock_elevenlabs_client, 
+        voice_settings=mock_voice_settings,
         model_id='eleven_multilingual_v2', 
         previous_request_ids=[] # note: no previous request ID
     )
@@ -165,7 +175,8 @@ def test_generate_audio_summary_pdf_only_e2e(
         text='Chunk 2', 
         voice_id='VOICE_TWO', 
         output_file=EXPECTED_PATH_001,
-        tts_client=ANY, 
+        tts_client=mock_elevenlabs_client, 
+        voice_settings=mock_voice_settings,
         model_id='eleven_multilingual_v2', 
         previous_request_ids=[MOCK_REQUEST_ID]
     )

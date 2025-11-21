@@ -414,7 +414,16 @@ def _generate_audio_summary(
     GEMINI_API_KEY = check_api_key(SERVICE_NAME, GEMINI_KEY_USER_NAME)
     ELEVENLABS_API_KEY = check_api_key(SERVICE_NAME, ELEVENLABS_KEY_USER_NAME)
 
+    ELEVENLABS_VOICE_SETTINGS = {
+        'stability': 0.5,
+        'similarity_boost': 0.75,
+        'style': 0.0,
+        'use_speaker_boost': True,
+        'speed': 1.0
+    }
+
     tts_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+    voice_settings = generate_voice_settings(ELEVENLABS_VOICE_SETTINGS)
     validate_voices(tts_client, speaker_one_voice, speaker_two_voice)
 
     TEXT_MODEL = 'gemini-2.5-pro'
@@ -492,6 +501,7 @@ def _generate_audio_summary(
             speaker_one_voice,
             speaker_two_voice,
             tts_client,
+            voice_settings,
             TTS_MODEL,
             backup_filepath
         )
@@ -504,6 +514,7 @@ def _generate_audio_summary(
         output_dir, audio_chunk_filepaths = execute_audio_regeneration_workflow(
             backup_file_for_regen,
             tts_client,
+            voice_settings,
             TTS_MODEL,
             timestamp
         )
@@ -563,6 +574,7 @@ def create_generation_data(
 def generate_audio_segments(
     generation_data: list[dict],
     tts_client: ElevenLabs,
+    voice_settings: VoiceSettings,
     model_id: str,
     backup_filepath: Path
 ):
@@ -584,6 +596,7 @@ def generate_audio_segments(
             voice_id=voice_id,
             output_file=output_filepath,
             tts_client=tts_client,
+            voice_settings=voice_settings,
             model_id=model_id,
             previous_request_ids=request_ids[-1:] # previous 1 ID (we can include up to 3,
                                                 # but for our use case, 1 seems optimal, based 
@@ -596,6 +609,7 @@ def generate_audio_segments(
 def regenerate_audio_segments(
     data_to_regenerate: list[tuple[int, dict]],
     tts_client: ElevenLabs,
+    voice_settings: VoiceSettings,
     model_id: str,
     output_dir: Path,
     timestamp: str
@@ -624,6 +638,7 @@ def regenerate_audio_segments(
             voice_id=voice_id,
             output_file=output_filepath,
             tts_client=tts_client,
+            voice_settings=voice_settings,
             model_id=model_id,
             previous_request_ids=[previous_request_id]
         )
@@ -804,8 +819,7 @@ def create_speaker_text_chunks(
             chunks_by_speaker.append(sub_chunks)
             
     return chunks_by_speaker
-
-    
+ 
 def chunk_segment_by_sentences(
     segment: str,
     char_limit: int
@@ -868,6 +882,7 @@ def generate_audio_with_timeout(
     voice_id: str,
     output_file: Path,
     tts_client: ElevenLabs,
+    voice_settings: VoiceSettings,
     model_id: str = 'eleven_multilingual_v2',
     timeout: float = (60.0 * 10), # 10 minutes per chunk/call
     previous_request_ids: list[str] = []
@@ -885,6 +900,7 @@ def generate_audio_with_timeout(
                 voice_id=voice_id,
                 output_file=output_file,
                 tts_client=tts_client,
+                voice_settings=voice_settings,
                 model_id=model_id,
                 previous_request_ids=previous_request_ids
             )
@@ -904,6 +920,7 @@ def generate_audio_chunk_from_chunk(
     voice_id: str,
     output_file: Path,
     tts_client: ElevenLabs,
+    voice_settings: VoiceSettings,
     model_id: str = 'eleven_multilingual_v2',
     previous_request_ids: list[str] = []
 ):
@@ -932,13 +949,7 @@ def generate_audio_chunk_from_chunk(
                 model_id=model_id,
                 text=text,
                 voice_id=voice_id,
-                voice_settings=VoiceSettings(
-                    stability=0.5,
-                    similarity_boost=0.75,
-                    style=0.0,
-                    use_speaker_boost=True,
-                    speed=1.0
-                    ),
+                voice_settings=voice_settings,
                 previous_request_ids=previous_request_ids,
                 output_format='pcm_24000' # important to use this encoding
                                         # for compatibility with write_audio_data_to_wav_file
@@ -952,7 +963,48 @@ def generate_audio_chunk_from_chunk(
 
         typer.echo("Max retries exceeded. Exiting.")
         raise typer.Exit(1)   
+
+def generate_voice_settings(user_config: dict):
+    """
+    Configure VoiceSettings instance from
+    dict of user_config settings.
+
+    Defaults applied in case of failure to
+    find appropriate setting in user_config.
+    """
+    expected_fields_and_defaults = [
+        ('stability', 0.5),
+        ('similarity_boost', 0.75),
+        ('style', 0.0),
+        ('use_speaker_boost', True),
+        ('speed', 1.0)
+    ]
     
+    final_config = {}
+
+    for key, default_val in expected_fields_and_defaults:
+        if (
+            key in user_config
+            and type(user_config[key]) == type(default_val)
+        ):
+            final_config[key] = user_config[key]
+        else:
+            typer.echo(
+                (
+                    f"User voice setting '{key}' not found or invalid. "
+                    f"Using default: {default_val}"
+                )
+            )
+            final_config[key] = default_val
+
+    return VoiceSettings(
+                stability=final_config['stability'],
+                similarity_boost=final_config['similarity_boost'],
+                style=final_config['style'],
+                use_speaker_boost=final_config['use_speaker_boost'],
+                speed=final_config['speed']
+            )
+
 def jitter_wait(delay: float, attempt: int, e: Exception = None):
     """
     Set wait time and sleep
@@ -1171,6 +1223,7 @@ def execute_audio_generation_workflow(
     speaker_one_voice: str,
     speaker_two_voice: str,
     tts_client: ElevenLabs,
+    voice_settings: VoiceSettings,
     tts_model: str,
     backup_filepath: Path
 ):
@@ -1200,13 +1253,20 @@ def execute_audio_generation_workflow(
         "Generating audio from transcript chunks. "
         "This could take a while..."
     )
-    generate_audio_segments(generation_data, tts_client, tts_model, backup_filepath)
+    generate_audio_segments(
+        generation_data, 
+        tts_client, 
+        voice_settings, 
+        tts_model, 
+        backup_filepath
+    )
 
     return audio_chunk_filepaths
 
 def execute_audio_regeneration_workflow(
     backup_file_for_regen: Path,
     tts_client: ElevenLabs,
+    voice_settings: VoiceSettings,
     tts_model: str,
     timestamp: str
 ) -> tuple[Path, list[Path]]:
@@ -1243,6 +1303,7 @@ def execute_audio_regeneration_workflow(
     new_filepaths_lookup_map = regenerate_audio_segments(
         data_to_regenerate, 
         tts_client, 
+        voice_settings,
         tts_model, 
         output_dir, 
         timestamp
