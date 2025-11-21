@@ -26,6 +26,7 @@ from main import (
     generate_audio_segments,
     generate_menu,
     generate_text,
+    generate_voice_settings,
     get_previous_request_id,
     get_voice_owner_id_from_community_library,
     infer_with_pdf_document_understanding,
@@ -37,6 +38,7 @@ from main import (
     validate_backup_data_voice_ids,
     validate_backup_data_segment_filepaths,
     validate_voices,
+    VoiceSettings,
     voice_exists_in_account_library,
     write_audio_data_to_wav_file,
     write_backup_to_json_file,
@@ -1232,6 +1234,70 @@ class TestChunkSegmentBySentences(TestCase):
         assert chunk_segment_by_sentences(self.text, char_limit) == [
             self.text
         ]
+
+@patch('main.typer')
+class TestGenerateVoiceSettings(TestCase):
+    """
+    Unit tests against generate_voice_settings
+    """
+
+    valid_config = {
+        'stability': 0.7,
+        'similarity_boost': 0.7,
+        'style': 0.5,
+        'use_speaker_boost': True,
+        'speed': 0.9
+    }
+    default_stability_value = 0.5 # from generate_voice_settings
+
+    def test_passed_config_is_valid(self, mock_typer):
+        """
+        Test that when a passed config
+        is valid, we use it
+        """
+        voice_settings = generate_voice_settings(self.valid_config)
+
+        assert isinstance(voice_settings, VoiceSettings)
+
+        mock_typer.echo.assert_not_called()
+
+        for key, value in self.valid_config.items():
+            assert getattr(voice_settings, key) == value
+
+
+    def test_use_default_if_config_key_missing(self, mock_typer):
+        """
+        If expected key is missing from passed config,
+        use the default value.
+        """
+        config_missing_key = { k: v for k, v in self.valid_config.items() if k != 'stability' }
+        expected_config = self.valid_config | { 'stability': self.default_stability_value }
+
+        voice_settings = generate_voice_settings(config_missing_key)
+
+        assert isinstance(voice_settings, VoiceSettings)
+
+        mock_typer.echo.assert_called_once()
+
+        for key, value in expected_config.items():
+            assert getattr(voice_settings, key) == value
+        
+    def test_use_default_if_config_value_invalid(self, mock_typer):
+        """
+        If config value is of the wrong type,
+        use the default value.
+        """
+        config_value_wrong_type = self.valid_config | { 'stability': True }
+        expected_config = self.valid_config | { 'stability': self.default_stability_value }
+
+        voice_settings = generate_voice_settings(config_value_wrong_type)
+
+        assert isinstance(voice_settings, VoiceSettings)
+
+        mock_typer.echo.assert_called_once()
+
+        for key, value in expected_config.items():
+            assert getattr(voice_settings, key) == value
 
 
 def test_generate_audio_chunk_from_chunk():
