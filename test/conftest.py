@@ -34,6 +34,21 @@ startxref
     'txt': b'lorem ipsum'
 }
 
+DUMMY_BACKUP_DATA = [
+        {
+            "voice_id": "voice_id_1",
+            "text": "Tiny is a ninjacat",
+            "filepath": "my_fake_filepath1",
+            "request_id": "123"
+        },
+        {
+            "voice_id": "voice_id_2",
+            "text": "Abby is a chungus",
+            "filepath": "my_fake_filepath2",
+            "request_id": "456"
+        }
+    ]
+
 class DummyTextResponse:
 	def __init__(self, text):
 		self.text = text
@@ -102,21 +117,6 @@ def output_dir():
     output_filepath = tmpdir_obj.name
     yield Path(output_filepath)
     tmpdir_obj.cleanup()
-
-DUMMY_BACKUP_DATA = [
-        {
-            "voice_id": "voice_id_1",
-            "text": "Tiny is a ninjacat",
-            "filepath": "my_fake_filepath1",
-            "request_id": "123"
-        },
-        {
-            "voice_id": "voice_id_2",
-            "text": "Abby is a chungus",
-            "filepath": "my_fake_filepath2",
-            "request_id": "456"
-        }
-    ]
 
 @pytest.fixture
 def genai_client_mock():

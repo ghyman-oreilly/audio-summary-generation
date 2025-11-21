@@ -24,10 +24,12 @@ from main import (
     generate_audio_segments,
     generate_menu,
     generate_text,
+    get_previous_request_id,
     get_voice_owner_id_from_community_library,
     infer_with_pdf_document_understanding,
     read_backup_from_json_file,
     read_text_from_file,
+    regenerate_audio_segments,
     validate_backup_data,
     validate_backup_data_shape,
     validate_backup_data_voice_ids,
@@ -1066,14 +1068,100 @@ def test_create_generation_data(has_multistring_sublist):
             speaker_two
         ) == expected_output
 
+@pytest.mark.parametrize(
+    "input_data, segment_index, id_is_returned",
+    [
+        pytest.param(
+            [(8, {'request_id': 'abc'}), (8, {'request_id': 'xyz'})], 
+            1, True, id='input-data-is-valid'
+        ),
+        pytest.param(
+            [(8, {'request_id': 'abc'}), (8, {'request_id': 'xyz'})], 
+            0, False, id='segment-index-is-zero'
+        ),
+        pytest.param(
+            [(8, {'voice_id': 'abc'}), (8, {'request_id': 'xyz'})], 
+            1, False, id='input-data-is-invalid'
+        )
+    ],
+)  
+def test_get_previous_request_id(input_data, segment_index, id_is_returned):
+    """
+    Unit test against get_previous_request_id
+    """
+    if id_is_returned:
+        assert get_previous_request_id(input_data, segment_index) == 'abc'
+    else:
+        assert get_previous_request_id(input_data, segment_index) == ''
 
-def test_get_previous_request_id():
-    # TODO: write test
-    pass
+def test_regenerate_audio_segments(mock_elevenlabs_client):
+    """
+    Unit test against regenerate_audio_segments
+    """
+    with (
+        patch('main.get_previous_request_id') as p_id,
+        patch('main.generate_audio_with_timeout') as p_audio
+    ):
+        previous_request_ids = ['abc', 'def']
+        p_id.side_effect = previous_request_ids
 
-def test_regenerate_audio_segments():
-    # TODO: write test
-    pass
+        model_id = 'my_model'
+        output_dir = 'my_dir'
+        timestamp = '123'
+
+        regen_ix_one = 4
+        regen_ix_two = 6
+
+        input_data = [
+            (regen_ix_one, DUMMY_BACKUP_DATA[0]), 
+            (regen_ix_two, DUMMY_BACKUP_DATA[1]) 
+        ]
+
+        output_filepath_one = f"{output_dir}/audio_chunk_{regen_ix_one:03d}_{timestamp}.wav"
+        output_filepath_two = f"{output_dir}/audio_chunk_{regen_ix_two:03d}_{timestamp}.wav"
+
+        expected_output = {
+            regen_ix_one: output_filepath_one,
+            regen_ix_two: output_filepath_two
+        }
+
+        assert regenerate_audio_segments(
+            input_data,
+            mock_elevenlabs_client,
+            'my_model',
+            Path(output_dir),
+            timestamp
+        ) == expected_output
+
+    p_id.assert_has_calls(
+        [
+            call(input_data, regen_ix_one),
+            call(input_data, regen_ix_two)
+        ], 
+        any_order=False
+    )
+
+    p_audio.assert_has_calls(
+        [
+            call(
+                text=DUMMY_BACKUP_DATA[0]['text'],
+                voice_id=DUMMY_BACKUP_DATA[0]['voice_id'],
+                output_file=Path(output_filepath_one),
+                tts_client=mock_elevenlabs_client,
+                model_id=model_id,
+                previous_request_ids=[previous_request_ids[0]]
+            ),
+            call(
+                text=DUMMY_BACKUP_DATA[1]['text'],
+                voice_id=DUMMY_BACKUP_DATA[1]['voice_id'],
+                output_file=Path(output_filepath_two),
+                tts_client=mock_elevenlabs_client,
+                model_id=model_id,
+                previous_request_ids=[previous_request_ids[1]]
+            ),
+        ],
+        any_order=False
+    )
 
 def test_chunk_segment_by_sentences():
     # TODO: write test
