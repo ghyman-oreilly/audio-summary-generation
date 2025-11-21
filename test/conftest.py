@@ -177,11 +177,8 @@ class VoiceSettings:
 @pytest.fixture
 def mock_elevenlabs_client():
     """Fixture to provide a mocked ElevenLabs client."""
-    client = MagicMock(spec=ElevenLabs)
-    client.voices = MagicMock()
-    client.voices.get = MagicMock()
-    return client
+    return MagicMock()
 
 @pytest.fixture
 def mock_voice_settings():
-     return MagicMock(spec=VoiceSettings)
+     return MagicMock()

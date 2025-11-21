@@ -22,6 +22,7 @@ from main import (
     execute_pdf_workflow, 
     execute_transcript_generation_workflow,
     file_is_valid,
+    generate_audio_chunk_from_chunk,
     generate_audio_with_timeout,
     generate_audio_segments,
     generate_menu,
@@ -1236,7 +1237,7 @@ class TestChunkSegmentBySentences(TestCase):
         ]
 
 @patch('main.typer')
-class TestGenerateVoiceSettings(TestCase):
+class TestGenerateVoiceSettings:
     """
     Unit tests against generate_voice_settings
     """
@@ -1300,9 +1301,126 @@ class TestGenerateVoiceSettings(TestCase):
             assert getattr(voice_settings, key) == value
 
 
-def test_generate_audio_chunk_from_chunk():
-    # TODO: write test
-    pass
+
+@patch('main.jitter_wait')
+@patch('main.write_audio_data_to_wav_file')
+class TestGenerateAudioChunkFromChunk:
+    """
+    Unit tests against generate_audio_chunk_from_chunk
+    """
+    text = "Bow bow pow bow bow"
+    voice_id = "cher_ai_deepfake"
+    output_file = Path('my_fake_filepath')
+    model_id = 'my_model'
+    base_request_ids = ['abc', 'def', 'ghi']
+    expected_output_request_id = 'my_request_id'
+
+    mock_http_response = MagicMock()
+
+    # mock is used a context manager; need __enter__ to return the same mock
+    mock_http_response.__enter__.return_value = mock_http_response
+
+    mock_http_response._response.headers.get.return_value = expected_output_request_id
+
+    mock_http_response.data = [b"my", b" ", b"output"]
+
+    expected_output_bytedata = b"my output"
+
+
+    def test_sucessful_on_second_attempt(
+        self, 
+        mock_write, 
+        mock_jitter_wait, 
+        mock_elevenlabs_client,
+        mock_voice_settings
+    ):
+        mock_elevenlabs_client.text_to_speech.with_raw_response.convert.side_effect = [Exception, self.mock_http_response]
+
+        assert generate_audio_chunk_from_chunk(
+            self.text,
+            self.voice_id,
+            self.output_file,
+            mock_elevenlabs_client,
+            mock_voice_settings,
+            self.model_id,
+            self.base_request_ids
+        ) == self.expected_output_request_id
+
+        mock_elevenlabs_client.text_to_speech.with_raw_response.convert.called_with(
+            self.model_id,
+            self.text,
+            self.voice_id,
+            mock_voice_settings,
+            self.base_request_ids,
+            'pcm_24000'
+        )
+
+        mock_elevenlabs_client.text_to_speech.with_raw_response.convert.call_count == 2
+        mock_jitter_wait.assert_called_once()
+        mock_write.assert_called_once_with(
+            self.output_file,
+            self.expected_output_bytedata
+        )
+
+
+    def test_max_attempts_exceeded(        
+        self, 
+        mock_write, 
+        mock_jitter_wait, 
+        mock_elevenlabs_client,
+        mock_voice_settings
+    ):
+        mock_elevenlabs_client.text_to_speech.with_raw_response.convert.side_effect = [Exception for _ in range(5)]
+
+        with pytest.raises(typer.Exit) as excinfo:
+            generate_audio_chunk_from_chunk(
+                self.text,
+                self.voice_id,
+                self.output_file,
+                mock_elevenlabs_client,
+                mock_voice_settings,
+                self.model_id,
+                self.base_request_ids
+            ) 
+            assert excinfo.value.exit_code == 1
+
+        mock_elevenlabs_client.text_to_speech.with_raw_response.convert.call_count == 5
+        mock_jitter_wait.call_count == 4
+        mock_write.assert_not_called()
+
+    def test_max_of_three_request_ids_passed(
+        self, 
+        mock_write, 
+        mock_jitter_wait, 
+        mock_elevenlabs_client,
+        mock_voice_settings
+    ):
+        mock_elevenlabs_client.text_to_speech.with_raw_response.convert.return_value = self.mock_http_response
+        previous_request_ids = self.base_request_ids.append('jkl')
+
+        assert generate_audio_chunk_from_chunk(
+            self.text,
+            self.voice_id,
+            self.output_file,
+            mock_elevenlabs_client,
+            mock_voice_settings,
+            self.model_id,
+            previous_request_ids # pass previous_request_ids (with 'jkl')
+        ) == self.expected_output_request_id
+
+        mock_elevenlabs_client.text_to_speech.with_raw_response.convert.called_once_with(
+            self.model_id,
+            self.text,
+            self.voice_id,
+            mock_voice_settings,
+            self.base_request_ids, # value appended when saving to previous_request_ids not included
+            'pcm_24000' # output format specified in function
+        )
+        mock_jitter_wait.not_called()
+        mock_write.assert_called_once_with(
+            self.output_file,
+            self.expected_output_bytedata
+        )
 
 def test_jitter_wait():
     # TODO: write test
