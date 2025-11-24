@@ -38,13 +38,13 @@ DUMMY_BACKUP_DATA = [
         {
             "voice_id": "voice_id_1",
             "text": "Tiny is a ninjacat",
-            "filepath": "my_fake_filepath1",
+            "filepath": "output_dir/my_fake_file1.wav",
             "request_id": "123"
         },
         {
             "voice_id": "voice_id_2",
             "text": "Abby is a chungus",
-            "filepath": "my_fake_filepath2",
+            "filepath": "output_dir/my_fake_file2.wav",
             "request_id": "456"
         }
     ]

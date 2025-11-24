@@ -19,7 +19,9 @@ from main import (
     combine_wav_files,
     delete_files,
     dir_is_valid,
+    execute_audio_generation_workflow,
     execute_pdf_workflow, 
+    execute_audio_regeneration_workflow,
     execute_transcript_generation_workflow,
     file_is_valid,
     generate_audio_chunk_from_chunk,
@@ -31,6 +33,7 @@ from main import (
     get_previous_request_id,
     get_voice_owner_id_from_community_library,
     infer_with_pdf_document_understanding,
+    jitter_wait,
     read_backup_from_json_file,
     read_text_from_file,
     regenerate_audio_segments,
@@ -1423,13 +1426,175 @@ class TestGenerateAudioChunkFromChunk:
         )
 
 def test_jitter_wait():
-    # TODO: write test
-    pass
+    """
+    Unit test against jitter_wait
+    
+    Verifies that the exponential backoff math works.
+    We force random.uniform to return 1.0 so we can test the base formula:
+    wait = delay * (2^attempt)
+
+    Also verifies that the exception string is formatted correctly when present.
+    """
+    with (
+        patch("main.time.sleep") as mock_sleep,
+        patch("main.typer.echo") as mock_echo,
+        patch("main.random.uniform", return_value=1.0) # nonrandom random
+    ):
+        mock_exception = ValueError("Connection failed")
+
+        # Delay 1.0, Attempt 3 -> 1.0 * (2^3) = 8.0 seconds
+        jitter_wait(delay=1.0, attempt=3, e=mock_exception)
+
+        mock_sleep.assert_called_once_with(8.0)
+        
+        args, _ = mock_echo.call_args
+
+        assert "Retrying after 8.0s" in args[0]    
+        assert "error: Connection failed" in args[0]
 
 def test_execute_audio_generation_workflow():
-    # TODO: write test
-    pass
+    """
+    Unit test against execute_audio_generation_workflow
+    """
+    speaker_one_text = "This is a transcript."
+    speaker_two_text = "Pretty great, huh?"
+    transcript = f"{speaker_one_text} {speaker_two_text}"
+    output_dir = Path('my_output_directory')
+    timestamp = '12345'
+    speaker_one_voice = 'abc'
+    speaker_two_voice = 'def'
+    tts_client = MagicMock()
+    voice_settings = MagicMock()
+    tts_model = 'my_model'
+    backup_filepath = Path('my_backup_filepath')
 
-def test_execute_audio_regeneration_workflow():
-    # TODO: write test
-    pass
+    text_chunks = [[speaker_one_text],[speaker_two_text]]
+    
+    expected_output_filepath_one = f"{str(output_dir)}/audio_chunk_000_{timestamp}.wav"
+    expected_output_filepath_two = f"{str(output_dir)}/audio_chunk_001_{timestamp}.wav"
+    generation_data = [
+        {
+            "voice_id": speaker_one_voice,
+            "text": speaker_one_text,
+            "filepath": expected_output_filepath_one
+        },
+        {
+            "voice_id": speaker_two_voice,
+            "text": speaker_two_text,
+            "filepath": expected_output_filepath_two
+        }
+    ]
+
+    expected_audio_filepaths = [
+        expected_output_filepath_one,
+        expected_output_filepath_two
+    ]
+
+    with (
+        patch('main.typer.echo'),
+        patch('main.create_speaker_text_chunks', return_value=text_chunks) as mock_text_chunks,
+        patch('main.create_generation_data', return_value=generation_data) as mock_gen_data,
+        patch('main.generate_audio_segments') as mock_gen_audio
+    ):
+        output_filepaths = execute_audio_generation_workflow(
+            transcript=transcript,
+            output_dir=output_dir,
+            timestamp=timestamp,
+            speaker_one_voice=speaker_one_voice,
+            speaker_two_voice=speaker_two_voice,
+            tts_client=tts_client,
+            voice_settings=voice_settings,
+            tts_model=tts_model,
+            backup_filepath=backup_filepath
+        )
+
+        mock_text_chunks.assert_called_once_with(transcript)
+        mock_gen_data.assert_called_once_with(
+            text_chunks,
+            output_dir,
+            timestamp,
+            speaker_one_voice,
+            speaker_two_voice
+        )
+        mock_gen_audio.assert_called_once_with(
+            generation_data,
+            tts_client, 
+            voice_settings, 
+            tts_model, 
+            backup_filepath
+        )
+        assert output_filepaths == expected_audio_filepaths
+
+@pytest.mark.parametrize(
+    "menu_return, exit_raised",
+    [
+        pytest.param([0, 1], False, id='all_items_selected_for_regen'),
+        pytest.param([], True, id='no_items_selected_exit_raises'),
+    ],
+)  
+def test_execute_audio_regeneration_workflow(menu_return, exit_raised):
+    """
+    Unit test against execute_audio_regeneration_workflow
+    """
+    timestamp = '12345'
+    tts_client = MagicMock()
+    voice_settings = MagicMock()
+    tts_model = 'my_model'
+    backup_filepath = Path('my_backup_filepath')
+
+    data_selected_to_regen = [(i, DUMMY_BACKUP_DATA[i]) for i in menu_return]
+    expected_output_dir = Path(DUMMY_BACKUP_DATA[0]['filepath']).parent
+    expected_filepaths_lookup_map = {
+        i: v for i, x in enumerate(DUMMY_BACKUP_DATA) 
+        for k, v in x.items() if k == 'filepath'
+    }
+    expected_audio_chunk_filepaths = [
+        expected_filepaths_lookup_map.get(i, x['filepath']) 
+        for i, x in enumerate(DUMMY_BACKUP_DATA)
+    ]
+
+    with (
+        patch('main.read_backup_from_json_file', return_value=DUMMY_BACKUP_DATA) as mock_read,
+        patch('main.generate_menu', return_value=menu_return) as mock_menu,
+        patch('main.regenerate_audio_segments', return_value=expected_filepaths_lookup_map) as mock_regen_audio,
+        patch('main.typer.echo')
+    ):
+        if exit_raised:
+            with pytest.raises(typer.Exit) as excinfo:
+                # Exit raised because menu returns empty list
+                execute_audio_regeneration_workflow(
+                    backup_file_for_regen=backup_filepath,
+                    tts_client=tts_client,
+                    voice_settings=voice_settings,
+                    tts_model=tts_model,
+                    timestamp=timestamp
+                )
+            assert excinfo.value.exit_code == 0
+        else:       
+            output_dir, audio_chunk_filepaths = execute_audio_regeneration_workflow(
+                backup_file_for_regen=backup_filepath,
+                tts_client=tts_client,
+                voice_settings=voice_settings,
+                tts_model=tts_model,
+                timestamp=timestamp
+            )
+
+            mock_read.assert_called_once_with(backup_filepath, tts_client)
+
+            mock_menu.assert_called_once_with(
+                [Path(x.get('filepath')).name for x in DUMMY_BACKUP_DATA],
+                'Select audio segments to regenerate',
+                multi_select=True
+            )
+
+            mock_regen_audio.assert_called_once_with(
+                data_selected_to_regen, 
+                tts_client, 
+                voice_settings,
+                tts_model, 
+                expected_output_dir, 
+                timestamp
+            )
+
+            assert expected_output_dir == output_dir
+            assert audio_chunk_filepaths == expected_audio_chunk_filepaths
