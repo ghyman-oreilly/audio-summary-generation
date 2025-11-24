@@ -1294,8 +1294,8 @@ def execute_audio_regeneration_workflow(
     )
 
     # exit in case of, e.g., Ctrl + C
-    if ix_of_items_to_regen is None:
-        typer.echo('Exiting.')
+    if not ix_of_items_to_regen:
+        typer.echo('No items selected. Exiting.')
         raise typer.Exit(0)
 
     # select original data of items to regenerate, by index
